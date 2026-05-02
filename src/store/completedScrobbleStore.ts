@@ -4,6 +4,7 @@ import {
   clearScrobbles,
   hydrateScrobbles,
   insertScrobble,
+  mergeScrobbles,
   replaceAllScrobbles,
 } from './persistence/scrobbleTable';
 
@@ -73,6 +74,15 @@ export interface CompletedScrobbleState {
    * provided list.
    */
   replaceAll: (scrobbles: CompletedScrobble[]) => void;
+  /**
+   * Merge the given scrobbles into the existing set (INSERT OR IGNORE per
+   * row). Used by merge-mode backup restore so a backup from another device
+   * unifies with locally-accumulated scrobbles instead of replacing them.
+   * Re-hydrates from SQL after the merge so derived stats reflect the
+   * union. Returns `{ added, skipped }` where `added` is rows actually
+   * inserted and `skipped` covers duplicates + invalid inputs.
+   */
+  mergeAll: (scrobbles: CompletedScrobble[]) => { added: number; skipped: number };
   /** Called once at app start to load persisted rows into memory. */
   hydrateFromDb: () => void;
 }
@@ -235,6 +245,20 @@ export const completedScrobbleStore = create<CompletedScrobbleState>()((set, get
       stats: buildStats(valid),
       aggregates: buildAggregates(valid),
     });
+  },
+
+  mergeAll: (scrobbles) => {
+    const result = mergeScrobbles(scrobbles);
+    // Re-hydrate from SQL so the in-memory array matches the unioned table
+    // exactly. Cheaper than reconciling incrementally and avoids drift if
+    // any rows were silently rejected by the table-level validation.
+    const restored = hydrateScrobbles();
+    set({
+      completedScrobbles: restored,
+      stats: buildStats(restored),
+      aggregates: buildAggregates(restored),
+    });
+    return result;
   },
 
   hydrateFromDb: () => {

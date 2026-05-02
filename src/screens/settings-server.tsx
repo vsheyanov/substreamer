@@ -25,6 +25,7 @@ import {
 import { changePassword, clearApiCache } from '../services/subsonicService';
 import { canUserScan, isAdminRoleUnknown, supports } from '../services/serverCapabilityService';
 import { authStore } from '../store/authStore';
+import { deviceIdentityStore } from '../store/deviceIdentityStore';
 import { settingsStyles } from '../styles/settingsStyles';
 import { resetAllStores } from '../store/resetAllStores';
 import { scanStatusStore } from '../store/scanStatusStore';
@@ -46,6 +47,30 @@ export function SettingsServerScreen() {
   const [confirmPw, setConfirmPw] = useState('');
   const [changePwError, setChangePwError] = useState<string | null>(null);
   const [changePwLoading, setChangePwLoading] = useState(false);
+
+  // Device name — identifies this install in the backup list. Lives in
+  // Account because it's a property of the user's identity on this device,
+  // and the Account section is where related identity fields (username,
+  // password) already live.
+  const deviceLabel = deviceIdentityStore((s) => s.deviceLabel);
+  const [deviceNameSheetVisible, setDeviceNameSheetVisible] = useState(false);
+  const [deviceNameInput, setDeviceNameInput] = useState('');
+  const [deviceNameSaved, setDeviceNameSaved] = useState(false);
+
+  const handleOpenDeviceNameSheet = useCallback(() => {
+    setDeviceNameInput(deviceLabel);
+    setDeviceNameSaved(false);
+    setDeviceNameSheetVisible(true);
+  }, [deviceLabel]);
+
+  const handleSaveDeviceName = useCallback(() => {
+    const trimmed = deviceNameInput.trim();
+    if (trimmed) {
+      deviceIdentityStore.getState().setDeviceLabel(trimmed);
+    }
+    setDeviceNameSaved(true);
+    setTimeout(() => setDeviceNameSheetVisible(false), 500);
+  }, [deviceNameInput]);
 
   const serverInfo = serverInfoStore(
     useShallow((s) => ({
@@ -358,12 +383,27 @@ export function SettingsServerScreen() {
               {serverInfo.adminRole === true ? t('yes') : serverInfo.adminRole === false ? t('no') : t('unknown')}
             </Text>
           </View>
-          <View style={styles.fieldRow}>
+          <View style={[styles.fieldRow, { borderBottomColor: colors.border }]}>
             <Text style={[styles.fieldLabel, { color: colors.textPrimary }]}>{t('shareRole')}</Text>
             <Text style={[styles.fieldValue, { color: colors.textSecondary }]}>
               {serverInfo.shareRole === true ? t('yes') : serverInfo.shareRole === false ? t('no') : t('unknown')}
             </Text>
           </View>
+          <Pressable
+            onPress={handleOpenDeviceNameSheet}
+            style={({ pressed }) => [
+              styles.fieldRow,
+              pressed && settingsStyles.pressed,
+            ]}
+          >
+            <Text style={[styles.fieldLabel, { color: colors.textPrimary }]}>{t('deviceName')}</Text>
+            <View style={styles.deviceNameValue}>
+              <Text style={[styles.fieldValue, { color: colors.textSecondary }]} numberOfLines={1}>
+                {deviceLabel}
+              </Text>
+              <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
+            </View>
+          </Pressable>
           <Pressable
             onPress={handleOpenChangePassword}
             style={({ pressed }) => [
@@ -468,6 +508,61 @@ export function SettingsServerScreen() {
         </Pressable>
       </Pressable>
     </Modal>
+
+    {/* Device name editor */}
+    <Modal
+      visible={deviceNameSheetVisible}
+      transparent
+      animationType="fade"
+      onRequestClose={() => setDeviceNameSheetVisible(false)}
+    >
+      <Pressable style={styles.modalBackdrop} onPress={() => setDeviceNameSheetVisible(false)}>
+        <Pressable style={[styles.modalCard, { backgroundColor: colors.card }]} onPress={() => {}}>
+          <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>{t('deviceName')}</Text>
+          <Text style={[styles.modalHint, { color: colors.textSecondary }]}>
+            {t('deviceNameEditPrompt')}
+          </Text>
+          <TextInput
+            style={[styles.modalInput, { backgroundColor: colors.inputBg, color: colors.textPrimary, borderColor: colors.border }]}
+            placeholder={deviceLabel}
+            placeholderTextColor={colors.textSecondary}
+            value={deviceNameInput}
+            onChangeText={setDeviceNameInput}
+            autoCapitalize="words"
+            autoCorrect={false}
+            returnKeyType="done"
+            onSubmitEditing={handleSaveDeviceName}
+            autoFocus
+          />
+          <View style={styles.modalButtons}>
+            <Pressable
+              onPress={() => setDeviceNameSheetVisible(false)}
+              style={({ pressed }) => [
+                styles.modalButton,
+                { borderColor: colors.border, borderWidth: 1 },
+                pressed && settingsStyles.pressed,
+              ]}
+            >
+              <Text style={[styles.modalButtonText, { color: colors.textPrimary }]}>{t('cancel')}</Text>
+            </Pressable>
+            <Pressable
+              onPress={handleSaveDeviceName}
+              style={({ pressed }) => [
+                styles.modalButton,
+                styles.modalButtonPrimary,
+                { backgroundColor: colors.primary },
+                pressed && settingsStyles.pressed,
+              ]}
+            >
+              <Text style={[styles.modalButtonText, { color: '#fff' }]}>
+                {deviceNameSaved ? t('saved') : t('save')}
+              </Text>
+            </Pressable>
+          </View>
+        </Pressable>
+      </Pressable>
+    </Modal>
+
     <ThemedAlert {...alertProps} />
     </>
   );
@@ -551,6 +646,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
   },
+  deviceNameValue: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flex: 1,
+    justifyContent: 'flex-end',
+  },
   logoutSection: {
     marginTop: 'auto',
   },
@@ -600,6 +702,13 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '700',
     marginBottom: 16,
+    textAlign: 'center',
+  },
+  modalHint: {
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: -8,
+    marginBottom: 12,
     textAlign: 'center',
   },
   modalInput: {

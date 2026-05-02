@@ -90,6 +90,42 @@ export function insertScrobble(scrobble: CompletedScrobble): void {
 }
 
 /**
+ * Merge the given scrobbles into the existing set, INSERT OR IGNORE per row.
+ * Used by merge-mode backup restore so a backup from another device unifies
+ * with locally-accumulated scrobbles instead of replacing them.
+ *
+ * Invalid records are filtered before insertion. Returns `{ added, skipped }`
+ * where `added` is the number of rows actually inserted (not already present)
+ * and `skipped` is the number of inputs ignored (duplicates or invalid).
+ */
+export function mergeScrobbles(
+  scrobbles: readonly CompletedScrobble[],
+): { added: number; skipped: number } {
+  const db = getDb();
+  if (db === null) return { added: 0, skipped: scrobbles.length };
+  try {
+    const before = countScrobbles();
+    db.withTransactionSync(() => {
+      const seen = new Set<string>();
+      for (const s of scrobbles) {
+        if (!s?.id || !s.song?.id || !s.song.title) continue;
+        if (seen.has(s.id)) continue;
+        seen.add(s.id);
+        db.runSync(
+          'INSERT OR IGNORE INTO scrobble_events (id, song_json, time) VALUES (?, ?, ?);',
+          [s.id, JSON.stringify(s.song), s.time],
+        );
+      }
+    });
+    const after = countScrobbles();
+    const added = Math.max(0, after - before);
+    return { added, skipped: scrobbles.length - added };
+  } catch {
+    return { added: 0, skipped: scrobbles.length };
+  }
+}
+
+/**
  * Wipe and bulk-insert the full scrobble set inside a single transaction.
  * Used by backup restore and the one-shot blob → per-row migration (task #13).
  * Invalid/duplicate records are filtered before insertion.

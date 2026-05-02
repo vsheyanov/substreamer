@@ -18,6 +18,15 @@ interface MbidOverrideState {
   setOverride: (type: MbidOverrideType, entityId: string, entityName: string, mbid: string) => void;
   removeOverride: (type: MbidOverrideType, entityId: string) => void;
   clearOverrides: () => void;
+  /**
+   * Merge the given overrides into the existing set: for each key in
+   * `incoming`, only set if no local entry exists. Conflict policy is
+   * existing-wins so the user's most recent edit on this device is
+   * preserved. Used by merge-mode backup restore.
+   */
+  mergeOverrides: (
+    incoming: Record<string, MbidOverride>,
+  ) => { added: number; skipped: number };
 }
 
 function overrideKey(type: MbidOverrideType, entityId: string): string {
@@ -37,7 +46,7 @@ const PERSIST_KEY = 'substreamer-mbid-overrides';
 
 export const mbidOverrideStore = create<MbidOverrideState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       overrides: {},
 
       setOverride: (type: MbidOverrideType, entityId: string, entityName: string, mbid: string) =>
@@ -59,6 +68,20 @@ export const mbidOverrideStore = create<MbidOverrideState>()(
         }),
 
       clearOverrides: () => set({ overrides: {} }),
+
+      mergeOverrides: (incoming) => {
+        let added = 0;
+        let skipped = 0;
+        const next: Record<string, MbidOverride> = { ...get().overrides };
+        for (const [key, value] of Object.entries(incoming)) {
+          if (!value || typeof value !== 'object') { skipped++; continue; }
+          if (key in next) { skipped++; continue; }
+          next[key] = value;
+          added++;
+        }
+        if (added > 0) set({ overrides: next });
+        return { added, skipped };
+      },
     }),
     {
       name: PERSIST_KEY,

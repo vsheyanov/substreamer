@@ -62,11 +62,33 @@ jest.mock('../../store/persistence/kvStorage', () => require('../../store/persis
 
 // Mock the per-row scrobble table so we can assert SQL-layer wiring without
 // needing a real SQLite handle in the test.
+const mockMergeScrobbles = jest.fn((..._args: unknown[]) => ({ added: 0, skipped: 0 }));
 jest.mock('../../store/persistence/scrobbleTable', () => ({
   insertScrobble: jest.fn(),
   replaceAllScrobbles: jest.fn(),
+  mergeScrobbles: (...args: unknown[]) => mockMergeScrobbles(...args),
   clearScrobbles: jest.fn(),
   hydrateScrobbles: jest.fn(() => []),
+}));
+
+// Mock the device identity store so backupService can stamp deviceId/
+// deviceName/deviceLabel into v5 metadata without depending on
+// expo-device / expo-crypto in the test runtime.
+const mockDeviceIdentity = {
+  deviceId: '11111111-2222-3333-4444-555555555555',
+  deviceName: 'Test Device OS Name',
+  deviceLabel: 'Your Test Device',
+  deviceLabelUserSet: false,
+  setDeviceLabel: jest.fn(),
+  refreshDeviceName: jest.fn(),
+  ensureDefaultLabel: jest.fn(),
+};
+jest.mock('../../store/deviceIdentityStore', () => ({
+  deviceIdentityStore: {
+    getState: () => mockDeviceIdentity,
+    setState: jest.fn(),
+  },
+  getDeviceShortId: () => '11111111',
 }));
 
 import { authStore } from '../../store/authStore';
@@ -83,6 +105,7 @@ import {
   pruneBackups,
   runAutoBackupIfNeeded,
   migrateV3BackupMetas,
+  migrateV4BackupMetas,
 } from '../backupService';
 
 const TEST_SERVER = 'https://music.example.com';
@@ -153,7 +176,7 @@ describe('makeBackupIdentityKey', () => {
 });
 
 describe('createBackup', () => {
-  it('compresses scrobbles and writes v4 meta with identity', async () => {
+  it('compresses scrobbles and writes v5 meta with identity + device tag', async () => {
     completedScrobbleStore.setState({
       completedScrobbles: [
         { id: 's1', song: { id: 'track-1' } as any, time: 1000 },
@@ -167,10 +190,17 @@ describe('createBackup', () => {
     const metaEntries = Array.from(mockFileInstances.entries())
       .filter(([k]) => k.endsWith('.meta.json'));
     expect(metaEntries).toHaveLength(1);
+    const [stem] = metaEntries[0];
+    // Filename stem now carries the device short id so cross-device backups
+    // sharing a cloud folder don't collide on the millisecond.
+    expect(stem).toMatch(/^backup-.*-11111111\.meta\.json$/);
     const meta = JSON.parse(metaEntries[0][1].content);
-    expect(meta.version).toBe(4);
+    expect(meta.version).toBe(5);
     expect(meta.serverUrl).toBe(TEST_SERVER);
     expect(meta.username).toBe(TEST_USER);
+    expect(meta.deviceId).toBe('11111111-2222-3333-4444-555555555555');
+    expect(meta.deviceName).toBe('Test Device OS Name');
+    expect(meta.deviceLabel).toBe('Your Test Device');
     expect(meta.scrobbles).toEqual({ itemCount: 1, sizeBytes: 42 });
     expect(meta.mbidOverrides).toBeNull();
     expect(meta.scrobbleExclusions).toBeNull();
@@ -434,6 +464,9 @@ describe('restoreBackup', () => {
     scrobbleExclusionSizeBytes: 0,
     serverUrl: TEST_SERVER,
     username: TEST_USER,
+    deviceId: null,
+    deviceName: null,
+    deviceLabel: null,
   };
 
   it('restores scrobbles from backup (in-memory + SQL round-trip)', async () => {
@@ -899,5 +932,343 @@ describe('createBackup edge cases', () => {
     mockCompressToFile.mockRejectedValue(new Error('compression failed'));
 
     await expect(createBackup()).rejects.toThrow('compression failed');
+  });
+});
+
+describe('migrateV4BackupMetas', () => {
+  it('upgrades v4 meta files to v5 with the provided device identity', async () => {
+    const v4 = {
+      version: 4,
+      createdAt: '2025-01-01',
+      serverUrl: TEST_SERVER,
+      username: TEST_USER,
+      scrobbles: { itemCount: 5, sizeBytes: 200 },
+      mbidOverrides: null,
+      scrobbleExclusions: null,
+    };
+    mockFileInstances.set('backup-2025.meta.json', {
+      exists: true, content: JSON.stringify(v4), deleted: false,
+    });
+    mockListDirectoryAsync.mockResolvedValue(['backup-2025.meta.json']);
+
+    const count = await migrateV4BackupMetas(
+      'aaaa-bbbb-cccc',
+      'OS Device Name',
+      'Your Test Device',
+    );
+
+    expect(count).toBe(1);
+    const upgraded = JSON.parse(mockFileInstances.get('backup-2025.meta.json')!.content);
+    expect(upgraded.version).toBe(5);
+    expect(upgraded.deviceId).toBe('aaaa-bbbb-cccc');
+    expect(upgraded.deviceName).toBe('OS Device Name');
+    expect(upgraded.deviceLabel).toBe('Your Test Device');
+    // Existing v4 fields preserved.
+    expect(upgraded.serverUrl).toBe(TEST_SERVER);
+    expect(upgraded.username).toBe(TEST_USER);
+    expect(upgraded.scrobbles).toEqual({ itemCount: 5, sizeBytes: 200 });
+  });
+
+  it('does not touch v3 backups (those are migrateV3BackupMetas\' job)', async () => {
+    const v3 = {
+      version: 3,
+      createdAt: '2025-01-01',
+      scrobbles: null,
+      mbidOverrides: null,
+      scrobbleExclusions: null,
+    };
+    mockFileInstances.set('backup-2025.meta.json', {
+      exists: true, content: JSON.stringify(v3), deleted: false,
+    });
+    mockListDirectoryAsync.mockResolvedValue(['backup-2025.meta.json']);
+
+    const count = await migrateV4BackupMetas('id', null, 'label');
+
+    expect(count).toBe(0);
+    const after = JSON.parse(mockFileInstances.get('backup-2025.meta.json')!.content);
+    expect(after.version).toBe(3);
+  });
+
+  it('is idempotent — does not touch v5 backups', async () => {
+    const v5 = {
+      version: 5,
+      createdAt: '2025-01-01',
+      serverUrl: TEST_SERVER,
+      username: TEST_USER,
+      deviceId: 'existing-id',
+      deviceName: 'existing-name',
+      deviceLabel: 'existing-label',
+      scrobbles: null,
+      mbidOverrides: null,
+      scrobbleExclusions: null,
+    };
+    mockFileInstances.set('backup-2025.meta.json', {
+      exists: true, content: JSON.stringify(v5), deleted: false,
+    });
+    mockListDirectoryAsync.mockResolvedValue(['backup-2025.meta.json']);
+
+    const count = await migrateV4BackupMetas('new-id', 'new-name', 'new-label');
+
+    expect(count).toBe(0);
+    const after = JSON.parse(mockFileInstances.get('backup-2025.meta.json')!.content);
+    expect(after.deviceId).toBe('existing-id');
+  });
+
+  it('skips unparseable files instead of throwing', async () => {
+    mockFileInstances.set('garbage.meta.json', {
+      exists: true, content: 'not json', deleted: false,
+    });
+    mockListDirectoryAsync.mockResolvedValue(['garbage.meta.json']);
+
+    await expect(migrateV4BackupMetas('id', null, 'label')).resolves.toBe(0);
+  });
+});
+
+describe('restoreBackup — merge mode', () => {
+  it('routes scrobbles through mergeAll instead of replaceAll', async () => {
+    const mergeAllSpy = jest.spyOn(completedScrobbleStore.getState(), 'mergeAll')
+      .mockReturnValue({ added: 3, skipped: 1 });
+
+    mockFileInstances.set('backup-x.scrobbles.gz', {
+      exists: true, content: '', deleted: false,
+    });
+    const scrobbles = [
+      { id: 's1', song: { id: 't1', title: 'T1' }, time: 1 },
+      { id: 's2', song: { id: 't2', title: 'T2' }, time: 2 },
+    ];
+    mockDecompressFromFile.mockResolvedValue(JSON.stringify(scrobbles));
+
+    const result = await restoreBackup({
+      stem: 'backup-x',
+      createdAt: '2025-01-01',
+      scrobbleCount: 2,
+      scrobbleSizeBytes: 0,
+      mbidOverrideCount: 0,
+      mbidOverrideSizeBytes: 0,
+      scrobbleExclusionCount: 0,
+      scrobbleExclusionSizeBytes: 0,
+      serverUrl: TEST_SERVER,
+      username: TEST_USER,
+      deviceId: 'remote-device',
+      deviceName: 'Remote',
+      deviceLabel: 'Remote Phone',
+    }, 'merge');
+
+    expect(mergeAllSpy).toHaveBeenCalledWith(scrobbles);
+    expect(result.scrobbleCount).toBe(3);
+    expect(result.scrobbleSkipped).toBe(1);
+    mergeAllSpy.mockRestore();
+  });
+
+  it('routes MBID overrides through mergeOverrides instead of setState', async () => {
+    const mergeSpy = jest.spyOn(mbidOverrideStore.getState(), 'mergeOverrides')
+      .mockReturnValue({ added: 2, skipped: 0 });
+
+    mockFileInstances.set('backup-x.mbid.gz', {
+      exists: true, content: '', deleted: false,
+    });
+    const overrides = {
+      'artist:a1': { type: 'artist', entityId: 'a1', entityName: 'X', mbid: 'mb-1' },
+      'album:b1': { type: 'album', entityId: 'b1', entityName: 'Y', mbid: 'mb-2' },
+    };
+    mockDecompressFromFile.mockResolvedValue(JSON.stringify(overrides));
+
+    const result = await restoreBackup({
+      stem: 'backup-x',
+      createdAt: '2025-01-01',
+      scrobbleCount: 0,
+      scrobbleSizeBytes: 0,
+      mbidOverrideCount: 2,
+      mbidOverrideSizeBytes: 0,
+      scrobbleExclusionCount: 0,
+      scrobbleExclusionSizeBytes: 0,
+      serverUrl: TEST_SERVER,
+      username: TEST_USER,
+      deviceId: 'remote-device',
+      deviceName: 'Remote',
+      deviceLabel: 'Remote Phone',
+    }, 'merge');
+
+    expect(mergeSpy).toHaveBeenCalledWith(overrides);
+    expect(result.mbidOverrideCount).toBe(2);
+    expect(result.mbidOverrideSkipped).toBe(0);
+    mergeSpy.mockRestore();
+  });
+
+  it('routes exclusions through mergeExclusions instead of setState', async () => {
+    const mergeSpy = jest.spyOn(scrobbleExclusionStore.getState(), 'mergeExclusions')
+      .mockReturnValue({ added: 1, skipped: 2 });
+
+    mockFileInstances.set('backup-x.exclusions.gz', {
+      exists: true, content: '', deleted: false,
+    });
+    const data = {
+      excludedAlbums: { al1: { id: 'al1', name: 'A' } },
+      excludedArtists: {},
+      excludedPlaylists: {},
+    };
+    mockDecompressFromFile.mockResolvedValue(JSON.stringify(data));
+
+    const result = await restoreBackup({
+      stem: 'backup-x',
+      createdAt: '2025-01-01',
+      scrobbleCount: 0,
+      scrobbleSizeBytes: 0,
+      mbidOverrideCount: 0,
+      mbidOverrideSizeBytes: 0,
+      scrobbleExclusionCount: 1,
+      scrobbleExclusionSizeBytes: 0,
+      serverUrl: TEST_SERVER,
+      username: TEST_USER,
+      deviceId: 'remote-device',
+      deviceName: 'Remote',
+      deviceLabel: 'Remote Phone',
+    }, 'merge');
+
+    expect(mergeSpy).toHaveBeenCalledWith(data);
+    expect(result.scrobbleExclusionCount).toBe(1);
+    expect(result.scrobbleExclusionSkipped).toBe(2);
+    mergeSpy.mockRestore();
+  });
+
+  it('default mode (no second arg) is replace, preserving the legacy contract', async () => {
+    const replaceSpy = jest.spyOn(completedScrobbleStore.getState(), 'replaceAll');
+    const mergeSpy = jest.spyOn(completedScrobbleStore.getState(), 'mergeAll');
+
+    mockFileInstances.set('backup-x.scrobbles.gz', {
+      exists: true, content: '', deleted: false,
+    });
+    mockDecompressFromFile.mockResolvedValue(JSON.stringify([
+      { id: 's1', song: { id: 't1', title: 'T1' }, time: 1 },
+    ]));
+
+    await restoreBackup({
+      stem: 'backup-x',
+      createdAt: '2025-01-01',
+      scrobbleCount: 1,
+      scrobbleSizeBytes: 0,
+      mbidOverrideCount: 0,
+      mbidOverrideSizeBytes: 0,
+      scrobbleExclusionCount: 0,
+      scrobbleExclusionSizeBytes: 0,
+      serverUrl: TEST_SERVER,
+      username: TEST_USER,
+      deviceId: null,
+      deviceName: null,
+      deviceLabel: null,
+    });
+
+    expect(replaceSpy).toHaveBeenCalledTimes(1);
+    expect(mergeSpy).not.toHaveBeenCalled();
+    replaceSpy.mockRestore();
+    mergeSpy.mockRestore();
+  });
+});
+
+describe('listBackups — v5 backup parsing', () => {
+  it('exposes deviceId, deviceName, deviceLabel for v5 backups', async () => {
+    const v5 = {
+      version: 5,
+      createdAt: '2025-01-01T00:00:00Z',
+      serverUrl: TEST_SERVER,
+      username: TEST_USER,
+      deviceId: 'aaaa-bbbb',
+      deviceName: 'Greg\'s Pixel',
+      deviceLabel: 'Your Pixel 8',
+      scrobbles: { itemCount: 1, sizeBytes: 100 },
+      mbidOverrides: null,
+      scrobbleExclusions: null,
+    };
+    mockFileInstances.set('backup-2025-aaaabbbb.meta.json', {
+      exists: true, content: JSON.stringify(v5), deleted: false,
+    });
+    mockFileInstances.set('backup-2025-aaaabbbb.scrobbles.gz', {
+      exists: true, content: '', deleted: false,
+    });
+    mockListDirectoryAsync.mockResolvedValue([
+      'backup-2025-aaaabbbb.meta.json',
+      'backup-2025-aaaabbbb.scrobbles.gz',
+    ]);
+
+    const { current } = await listBackups({ serverUrl: TEST_SERVER, username: TEST_USER });
+
+    expect(current).toHaveLength(1);
+    expect(current[0].deviceId).toBe('aaaa-bbbb');
+    expect(current[0].deviceName).toBe("Greg's Pixel");
+    expect(current[0].deviceLabel).toBe('Your Pixel 8');
+  });
+
+  it('returns null device fields for v3/v4 backups', async () => {
+    const v4 = {
+      version: 4,
+      createdAt: '2025-01-01T00:00:00Z',
+      serverUrl: TEST_SERVER,
+      username: TEST_USER,
+      scrobbles: { itemCount: 1, sizeBytes: 100 },
+      mbidOverrides: null,
+      scrobbleExclusions: null,
+    };
+    mockFileInstances.set('backup-2025.meta.json', {
+      exists: true, content: JSON.stringify(v4), deleted: false,
+    });
+    mockFileInstances.set('backup-2025.scrobbles.gz', {
+      exists: true, content: '', deleted: false,
+    });
+    mockListDirectoryAsync.mockResolvedValue([
+      'backup-2025.meta.json',
+      'backup-2025.scrobbles.gz',
+    ]);
+
+    const { current } = await listBackups({ serverUrl: TEST_SERVER, username: TEST_USER });
+
+    expect(current).toHaveLength(1);
+    expect(current[0].deviceId).toBeNull();
+    expect(current[0].deviceName).toBeNull();
+    expect(current[0].deviceLabel).toBeNull();
+  });
+});
+
+describe('pruneBackups — per-device bucketing', () => {
+  function makeV5(stem: string, deviceId: string, createdAt: string) {
+    const meta = {
+      version: 5,
+      createdAt,
+      serverUrl: TEST_SERVER,
+      username: TEST_USER,
+      deviceId,
+      deviceName: null,
+      deviceLabel: 'Device',
+      scrobbles: { itemCount: 1, sizeBytes: 1 },
+      mbidOverrides: null,
+      scrobbleExclusions: null,
+    };
+    mockFileInstances.set(`${stem}.meta.json`, {
+      exists: true, content: JSON.stringify(meta), deleted: false,
+    });
+    mockFileInstances.set(`${stem}.scrobbles.gz`, {
+      exists: true, content: '', deleted: false,
+    });
+  }
+
+  it('keeps `keep` most recent per (server, username, deviceId) bucket', async () => {
+    // Two devices, 4 backups each. With keep=2, each device retains its
+    // 2 most recent (4 total kept, 4 deleted).
+    for (let i = 1; i <= 4; i++) {
+      makeV5(`backup-A${i}`, 'device-A', `2025-01-0${i}`);
+      makeV5(`backup-B${i}`, 'device-B', `2025-01-0${i}`);
+    }
+    mockListDirectoryAsync.mockResolvedValue(Array.from(mockFileInstances.keys()));
+
+    await pruneBackups(2);
+
+    // A1, A2, B1, B2 deleted (oldest); A3, A4, B3, B4 kept (newest two per device).
+    expect(mockFileInstances.get('backup-A1.meta.json')?.deleted).toBe(true);
+    expect(mockFileInstances.get('backup-A2.meta.json')?.deleted).toBe(true);
+    expect(mockFileInstances.get('backup-A3.meta.json')?.deleted).toBeFalsy();
+    expect(mockFileInstances.get('backup-A4.meta.json')?.deleted).toBeFalsy();
+    expect(mockFileInstances.get('backup-B1.meta.json')?.deleted).toBe(true);
+    expect(mockFileInstances.get('backup-B2.meta.json')?.deleted).toBe(true);
+    expect(mockFileInstances.get('backup-B3.meta.json')?.deleted).toBeFalsy();
+    expect(mockFileInstances.get('backup-B4.meta.json')?.deleted).toBeFalsy();
   });
 });

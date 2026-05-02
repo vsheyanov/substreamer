@@ -13,6 +13,24 @@ jest.mock('../../store/persistence/kvStorage', () =>
   require('../../store/persistence/__mocks__/kvStorage'),
 );
 
+// Migration #21 imports deviceIdentityStore which transitively pulls
+// expo-device + expo-crypto + i18n. Mock the store so the migration runs
+// without dragging the native bridge into the test.
+jest.mock('../../store/deviceIdentityStore', () => ({
+  deviceIdentityStore: {
+    getState: () => ({
+      deviceId: 'mock-device-id',
+      deviceName: null,
+      deviceLabel: 'Your Mock Device',
+      deviceLabelUserSet: false,
+      refreshDeviceName: jest.fn(),
+      ensureDefaultLabel: jest.fn(),
+    }),
+    setState: jest.fn(),
+  },
+  getDeviceShortId: () => 'mock1234',
+}));
+
 // Silence the real module's expo-sqlite init so it doesn't try to open a
 // native handle during module load.
 jest.mock('expo-sqlite', () => ({
@@ -493,10 +511,13 @@ describe('migrations 17–20: raw_json backfill', () => {
     expect(itemsAfterFirst).toBe(1);
     expect(edgesAfterFirst).toBe(2);
 
-    // Simulate second run with completedVersion=20 — should be no pending
-    // tasks at all.
+    // Simulate second run with completedVersion=20 — Migration 20 (the
+    // one this test exercises) is now done, so it should not appear in
+    // the pending set. Later, unrelated migrations may exist; assert
+    // specifically that Migration 20 is not pending rather than that
+    // the list is empty.
     const stillPending = getPendingTasks(20);
-    expect(stillPending).toHaveLength(0);
+    expect(stillPending.find((t) => t.id === 20)).toBeUndefined();
   });
 
   test('20: falls back to column data when album_details is empty and song raw_json is null', async () => {

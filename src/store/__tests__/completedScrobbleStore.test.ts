@@ -5,6 +5,7 @@
 jest.mock('../persistence/scrobbleTable', () => ({
   insertScrobble: jest.fn(),
   replaceAllScrobbles: jest.fn(),
+  mergeScrobbles: jest.fn(() => ({ added: 0, skipped: 0 })),
   clearScrobbles: jest.fn(),
   hydrateScrobbles: jest.fn(() => []),
 }));
@@ -20,11 +21,13 @@ import {
   clearScrobbles,
   hydrateScrobbles,
   insertScrobble,
+  mergeScrobbles,
   replaceAllScrobbles,
 } from '../persistence/scrobbleTable';
 
 const mockInsertScrobble = insertScrobble as jest.Mock;
 const mockReplaceAllScrobbles = replaceAllScrobbles as jest.Mock;
+const mockMergeScrobbles = mergeScrobbles as jest.Mock;
 const mockClearScrobbles = clearScrobbles as jest.Mock;
 const mockHydrateScrobbles = hydrateScrobbles as jest.Mock;
 
@@ -510,5 +513,58 @@ describe('clearCompletedScrobbleTable', () => {
   it('proxies to clearScrobbles on the persistence module', () => {
     clearCompletedScrobbleTable();
     expect(mockClearScrobbles).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('mergeAll', () => {
+  beforeEach(() => {
+    mockMergeScrobbles.mockClear();
+    mockHydrateScrobbles.mockClear();
+  });
+
+  it('delegates to mergeScrobbles and re-hydrates from SQL', () => {
+    const incoming: CompletedScrobble[] = [
+      validScrobble({ id: 'b1', time: 100 }),
+      validScrobble({ id: 'b2', time: 200 }),
+    ];
+    mockMergeScrobbles.mockReturnValueOnce({ added: 2, skipped: 0 });
+    mockHydrateScrobbles.mockReturnValueOnce(incoming);
+
+    const result = completedScrobbleStore.getState().mergeAll(incoming);
+
+    expect(mockMergeScrobbles).toHaveBeenCalledWith(incoming);
+    expect(mockHydrateScrobbles).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ added: 2, skipped: 0 });
+    const state = completedScrobbleStore.getState();
+    expect(state.completedScrobbles).toEqual(incoming);
+    expect(state.stats.totalPlays).toBe(2);
+  });
+
+  it('reports added/skipped counts from the SQL layer', () => {
+    mockMergeScrobbles.mockReturnValueOnce({ added: 1, skipped: 1 });
+    mockHydrateScrobbles.mockReturnValueOnce([]);
+
+    const result = completedScrobbleStore.getState().mergeAll([
+      validScrobble({ id: 'a1' }),
+      validScrobble({ id: 'a2' }),
+    ]);
+
+    expect(result).toEqual({ added: 1, skipped: 1 });
+  });
+
+  it('keeps in-memory state in sync with what SQL actually has after merge', () => {
+    completedScrobbleStore.getState().addCompleted(validScrobble({ id: 'local-1', time: 50 }));
+    const merged: CompletedScrobble[] = [
+      validScrobble({ id: 'local-1', time: 50 }),
+      validScrobble({ id: 'remote-1', time: 100 }),
+    ];
+    mockMergeScrobbles.mockReturnValueOnce({ added: 1, skipped: 1 });
+    mockHydrateScrobbles.mockReturnValueOnce(merged);
+
+    completedScrobbleStore.getState().mergeAll([validScrobble({ id: 'remote-1', time: 100 })]);
+
+    const state = completedScrobbleStore.getState();
+    expect(state.completedScrobbles).toEqual(merged);
+    expect(state.stats.totalPlays).toBe(2);
   });
 });

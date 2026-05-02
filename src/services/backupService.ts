@@ -7,6 +7,7 @@ import { defaultCollator } from '../utils/intl';
 import { authStore } from '../store/authStore';
 import { backupStore } from '../store/backupStore';
 import { completedScrobbleStore } from '../store/completedScrobbleStore';
+import { deviceIdentityStore, getDeviceShortId } from '../store/deviceIdentityStore';
 import { mbidOverrideStore } from '../store/mbidOverrideStore';
 import { scrobbleExclusionStore } from '../store/scrobbleExclusionStore';
 
@@ -41,7 +42,23 @@ interface BackupMetaV4 {
   scrobbleExclusions: BackupDatasetMeta | null;
 }
 
-type BackupMeta = BackupMetaV3 | BackupMetaV4;
+interface BackupMetaV5 {
+  version: 5;
+  createdAt: string;
+  serverUrl: string;
+  username: string;
+  /** Stable per-install UUID of the creating device — canonical match key. */
+  deviceId: string;
+  /** OS-returned device name (`Device.deviceName`) at backup time. */
+  deviceName: string | null;
+  /** Human-readable display label at backup time (snapshot, not live). */
+  deviceLabel: string;
+  scrobbles: BackupDatasetMeta | null;
+  mbidOverrides: BackupDatasetMeta | null;
+  scrobbleExclusions: BackupDatasetMeta | null;
+}
+
+type BackupMeta = BackupMetaV3 | BackupMetaV4 | BackupMetaV5;
 
 export interface BackupEntry {
   createdAt: string;
@@ -54,6 +71,26 @@ export interface BackupEntry {
   stem: string;
   serverUrl: string | null;
   username: string | null;
+  /** v5+ — UUID of the creating device. Null for v3/v4 backups. */
+  deviceId: string | null;
+  /** v5+ — OS-returned device name at backup time. Null if not captured. */
+  deviceName: string | null;
+  /** v5+ — Human-readable label at backup time. Null for v3/v4 backups. */
+  deviceLabel: string | null;
+}
+
+/** Restore application strategy — wholesale replace or merge into existing local data. */
+export type RestoreMode = 'replace' | 'merge';
+
+export interface RestoreCounts {
+  /** Rows actually inserted (or replaced) into local stores. */
+  scrobbleCount: number;
+  /** Rows ignored as duplicates during merge (always 0 in replace mode). */
+  scrobbleSkipped: number;
+  mbidOverrideCount: number;
+  mbidOverrideSkipped: number;
+  scrobbleExclusionCount: number;
+  scrobbleExclusionSkipped: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -145,8 +182,14 @@ export async function createBackup(): Promise<void> {
     throw new Error('Cannot create backup: no active session');
   }
 
+  const { deviceId, deviceName, deviceLabel } = deviceIdentityStore.getState();
+
   const timestamp = makeTimestamp();
-  const stem = `backup-${timestamp}`;
+  // Suffix the stem with the device's short id so two devices that happen
+  // to write a backup in the same second on a shared cloud folder don't
+  // collide on filename. v3/v4 stems (`backup-{ts}`) keep working — the
+  // listing parses by reading the meta JSON, not by parsing the filename.
+  const stem = `backup-${timestamp}-${getDeviceShortId()}`;
 
   let scrobblesMeta: BackupDatasetMeta | null = null;
   let mbidMeta: BackupDatasetMeta | null = null;
@@ -217,11 +260,14 @@ export async function createBackup(): Promise<void> {
 
   if (!scrobblesMeta && !mbidMeta && !exclusionsMeta) return;
 
-  const meta: BackupMetaV4 = {
-    version: 4,
+  const meta: BackupMetaV5 = {
+    version: 5,
     createdAt: new Date().toISOString(),
     serverUrl,
     username,
+    deviceId,
+    deviceName,
+    deviceLabel,
     scrobbles: scrobblesMeta,
     mbidOverrides: mbidMeta,
     scrobbleExclusions: exclusionsMeta,
@@ -260,7 +306,7 @@ export async function listBackups(
       const raw = await metaFile.text();
       const meta: BackupMeta = JSON.parse(raw);
 
-      if (meta.version !== 3 && meta.version !== 4) continue;
+      if (meta.version !== 3 && meta.version !== 4 && meta.version !== 5) continue;
 
       const stem = name.replace(/\.meta\.json$/, '');
 
@@ -278,8 +324,11 @@ export async function listBackups(
         scrobbleExclusionCount: meta.scrobbleExclusions?.itemCount ?? 0,
         scrobbleExclusionSizeBytes: meta.scrobbleExclusions?.sizeBytes ?? 0,
         stem,
-        serverUrl: meta.version === 4 ? meta.serverUrl : null,
-        username: meta.version === 4 ? meta.username : null,
+        serverUrl: meta.version === 4 || meta.version === 5 ? meta.serverUrl : null,
+        username: meta.version === 4 || meta.version === 5 ? meta.username : null,
+        deviceId: meta.version === 5 ? meta.deviceId : null,
+        deviceName: meta.version === 5 ? meta.deviceName : null,
+        deviceLabel: meta.version === 5 ? meta.deviceLabel : null,
       });
     } catch {
       continue;
@@ -320,10 +369,14 @@ export async function listBackups(
 
 export async function restoreBackup(
   entry: BackupEntry,
-): Promise<{ scrobbleCount: number; mbidOverrideCount: number; scrobbleExclusionCount: number }> {
+  mode: RestoreMode = 'replace',
+): Promise<RestoreCounts> {
   let scrobbleCount = 0;
+  let scrobbleSkipped = 0;
   let mbidOverrideCount = 0;
+  let mbidOverrideSkipped = 0;
   let scrobbleExclusionCount = 0;
+  let scrobbleExclusionSkipped = 0;
 
   if (entry.scrobbleCount > 0) {
     const dataFile = new File(backupDir, scrobblesFileName(entry.stem));
@@ -332,11 +385,20 @@ export async function restoreBackup(
     }
     const json = await decompressFromFile(dataFile.uri);
     const scrobbles: CompletedScrobble[] = JSON.parse(json);
-    // replaceAll writes the scrobble_events table in one transaction and then
-    // rebuilds stats/aggregates from the validated set, keeping SQL + memory
-    // coherent for any follow-up reads (home stats, my-listening, etc.).
-    completedScrobbleStore.getState().replaceAll(scrobbles);
-    scrobbleCount = completedScrobbleStore.getState().completedScrobbles.length;
+    if (mode === 'merge') {
+      // mergeAll uses INSERT OR IGNORE per-row inside one transaction,
+      // returning the actual added/skipped counts; existing scrobbles are
+      // preserved on id collision (random suffix makes collisions noise).
+      const result = completedScrobbleStore.getState().mergeAll(scrobbles);
+      scrobbleCount = result.added;
+      scrobbleSkipped = result.skipped;
+    } else {
+      // replaceAll writes the scrobble_events table in one transaction and then
+      // rebuilds stats/aggregates from the validated set, keeping SQL + memory
+      // coherent for any follow-up reads (home stats, my-listening, etc.).
+      completedScrobbleStore.getState().replaceAll(scrobbles);
+      scrobbleCount = completedScrobbleStore.getState().completedScrobbles.length;
+    }
   }
 
   if (entry.mbidOverrideCount > 0) {
@@ -360,8 +422,16 @@ export async function restoreBackup(
     } else {
       overrides = raw as Record<string, MbidOverride>;
     }
-    mbidOverrideStore.setState({ overrides });
-    mbidOverrideCount = Object.keys(overrides).length;
+    if (mode === 'merge') {
+      // mergeOverrides keeps existing local entries on key conflict so the
+      // user's most recent edit on this device is preserved.
+      const result = mbidOverrideStore.getState().mergeOverrides(overrides);
+      mbidOverrideCount = result.added;
+      mbidOverrideSkipped = result.skipped;
+    } else {
+      mbidOverrideStore.setState({ overrides });
+      mbidOverrideCount = Object.keys(overrides).length;
+    }
   }
 
   if (entry.scrobbleExclusionCount > 0) {
@@ -375,18 +445,28 @@ export async function restoreBackup(
       excludedArtists: Record<string, ScrobbleExclusion>;
       excludedPlaylists: Record<string, ScrobbleExclusion>;
     } = JSON.parse(json);
-    scrobbleExclusionStore.setState({
-      excludedAlbums: data.excludedAlbums,
-      excludedArtists: data.excludedArtists,
-      excludedPlaylists: data.excludedPlaylists,
-    });
-    scrobbleExclusionCount =
-      Object.keys(data.excludedAlbums).length +
-      Object.keys(data.excludedArtists).length +
-      Object.keys(data.excludedPlaylists).length;
+    if (mode === 'merge') {
+      const result = scrobbleExclusionStore.getState().mergeExclusions(data);
+      scrobbleExclusionCount = result.added;
+      scrobbleExclusionSkipped = result.skipped;
+    } else {
+      scrobbleExclusionStore.setState({
+        excludedAlbums: data.excludedAlbums,
+        excludedArtists: data.excludedArtists,
+        excludedPlaylists: data.excludedPlaylists,
+      });
+      scrobbleExclusionCount =
+        Object.keys(data.excludedAlbums).length +
+        Object.keys(data.excludedArtists).length +
+        Object.keys(data.excludedPlaylists).length;
+    }
   }
 
-  return { scrobbleCount, mbidOverrideCount, scrobbleExclusionCount };
+  return {
+    scrobbleCount, scrobbleSkipped,
+    mbidOverrideCount, mbidOverrideSkipped,
+    scrobbleExclusionCount, scrobbleExclusionSkipped,
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -400,11 +480,33 @@ export async function pruneBackups(keep = MAX_BACKUPS): Promise<void> {
   // Get all backups for the current username (across all server URLs)
   const { current, other } = await listBackups({ serverUrl, username });
   const allForUser = [...current, ...other];
+  // Sort newest-first so each bucket retains the freshest `keep` entries.
   allForUser.sort((a, b) => defaultCollator.compare(b.createdAt, a.createdAt));
 
-  if (allForUser.length <= keep) return;
+  // Bucket per (serverUrl, username, deviceId). Backups without a deviceId
+  // (v3/v4 from before the device-tagging upgrade) share a single "legacy"
+  // bucket so the pre-upgrade history isn't deleted wholesale on the next
+  // prune. With three devices on the same identity each retaining `keep`
+  // entries plus the legacy bucket, on-disk total stays bounded.
+  const buckets = new Map<string, BackupEntry[]>();
+  for (const entry of allForUser) {
+    const bucketKey = entry.deviceId
+      ? `${entry.serverUrl ?? '?'}|${entry.username ?? '?'}|${entry.deviceId}`
+      : 'legacy';
+    let bucket = buckets.get(bucketKey);
+    if (!bucket) {
+      bucket = [];
+      buckets.set(bucketKey, bucket);
+    }
+    bucket.push(entry);
+  }
 
-  const toDelete = allForUser.slice(keep);
+  const toDelete: BackupEntry[] = [];
+  for (const bucket of buckets.values()) {
+    if (bucket.length <= keep) continue;
+    toDelete.push(...bucket.slice(keep));
+  }
+
   for (const entry of toDelete) {
     const filesToRemove = [
       metaFileName(entry.stem),
@@ -491,6 +593,70 @@ export async function runAutoBackupIfNeeded(): Promise<void> {
        This includes init-time FS failures from cleanUpOrphanedFiles/
        createBackup/pruneBackups and any transient file system errors. */
   }
+}
+
+/* ------------------------------------------------------------------ */
+/*  V4 → V5 migration helper                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Upgrade all v4 backup meta files to v5 by stamping them with the
+ * **current** device's identity. There's no record of which device
+ * originally created a v4 backup, so attributing them to the local
+ * device is the best we can do — and is correct in the common case
+ * (the user has just upgraded on their primary device).
+ *
+ * Idempotent: only files with `version === 4` are touched. Subsequent
+ * launches no-op. v3 backups are not double-bumped here — the existing
+ * `migrateV3BackupMetas` handles those.
+ */
+export async function migrateV4BackupMetas(
+  deviceId: string,
+  deviceName: string | null,
+  deviceLabel: string,
+): Promise<number> {
+  initBackupDir();
+
+  let fileNames: string[];
+  try {
+    fileNames = await listDirectoryAsync(backupDir.uri);
+  } catch {
+    return 0;
+  }
+
+  let migrated = 0;
+
+  for (const name of fileNames) {
+    if (!name.endsWith('.meta.json')) continue;
+
+    const metaFile = new File(backupDir, name);
+    try {
+      const raw = await metaFile.text();
+      const meta = JSON.parse(raw);
+
+      if (meta.version !== 4) continue;
+
+      const upgraded: BackupMetaV5 = {
+        version: 5,
+        createdAt: meta.createdAt,
+        serverUrl: meta.serverUrl,
+        username: meta.username,
+        deviceId,
+        deviceName,
+        deviceLabel,
+        scrobbles: meta.scrobbles,
+        mbidOverrides: meta.mbidOverrides,
+        scrobbleExclusions: meta.scrobbleExclusions,
+      };
+
+      metaFile.write(JSON.stringify(upgraded));
+      migrated++;
+    } catch {
+      continue;
+    }
+  }
+
+  return migrated;
 }
 
 /* ------------------------------------------------------------------ */

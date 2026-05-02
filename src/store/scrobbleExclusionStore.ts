@@ -16,6 +16,16 @@ interface ScrobbleExclusionState {
   excludedPlaylists: Record<string, ScrobbleExclusion>;
   addExclusion: (type: ScrobbleExclusionType, id: string, name: string) => void;
   removeExclusion: (type: ScrobbleExclusionType, id: string) => void;
+  /**
+   * Merge the given exclusions into the existing set: union of all three
+   * dicts, existing-wins on key conflict (consistent with mbidOverrideStore).
+   * Used by merge-mode backup restore. Returns counts across all three types.
+   */
+  mergeExclusions: (incoming: {
+    excludedAlbums?: Record<string, ScrobbleExclusion>;
+    excludedArtists?: Record<string, ScrobbleExclusion>;
+    excludedPlaylists?: Record<string, ScrobbleExclusion>;
+  }) => { added: number; skipped: number };
 }
 
 const PERSIST_KEY = 'substreamer-scrobble-exclusions';
@@ -30,7 +40,7 @@ function fieldForType(type: ScrobbleExclusionType): keyof Pick<ScrobbleExclusion
 
 export const scrobbleExclusionStore = create<ScrobbleExclusionState>()(
   persist(
-    (set) => ({
+    (set, get) => ({
       excludedAlbums: {},
       excludedArtists: {},
       excludedPlaylists: {},
@@ -48,6 +58,34 @@ export const scrobbleExclusionStore = create<ScrobbleExclusionState>()(
           const { [id]: _, ...rest } = state[field];
           return { [field]: rest };
         });
+      },
+
+      mergeExclusions: (incoming) => {
+        const state = get();
+        let added = 0;
+        let skipped = 0;
+        const next = {
+          excludedAlbums: { ...state.excludedAlbums },
+          excludedArtists: { ...state.excludedArtists },
+          excludedPlaylists: { ...state.excludedPlaylists },
+        };
+        const tryMerge = (
+          target: Record<string, ScrobbleExclusion>,
+          source: Record<string, ScrobbleExclusion> | undefined,
+        ) => {
+          if (!source) return;
+          for (const [id, value] of Object.entries(source)) {
+            if (!value || typeof value !== 'object' || !value.id) { skipped++; continue; }
+            if (id in target) { skipped++; continue; }
+            target[id] = value;
+            added++;
+          }
+        };
+        tryMerge(next.excludedAlbums, incoming.excludedAlbums);
+        tryMerge(next.excludedArtists, incoming.excludedArtists);
+        tryMerge(next.excludedPlaylists, incoming.excludedPlaylists);
+        if (added > 0) set(next);
+        return { added, skipped };
       },
     }),
     {

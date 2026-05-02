@@ -111,4 +111,53 @@ describe('scrobbleExclusionStore', () => {
       expect(partialized).not.toHaveProperty('removeExclusion');
     });
   });
+
+  describe('mergeExclusions', () => {
+    it('unions all three dicts when keys are disjoint', () => {
+      scrobbleExclusionStore.getState().addExclusion('album', 'al1', 'Local Album');
+
+      const result = scrobbleExclusionStore.getState().mergeExclusions({
+        excludedAlbums: { al2: { id: 'al2', name: 'New Album' } },
+        excludedArtists: { ar1: { id: 'ar1', name: 'New Artist' } },
+        excludedPlaylists: { pl1: { id: 'pl1', name: 'New Playlist' } },
+      });
+
+      expect(result).toEqual({ added: 3, skipped: 0 });
+      const state = scrobbleExclusionStore.getState();
+      expect(state.excludedAlbums.al1.name).toBe('Local Album');
+      expect(state.excludedAlbums.al2.name).toBe('New Album');
+      expect(state.excludedArtists.ar1.name).toBe('New Artist');
+      expect(state.excludedPlaylists.pl1.name).toBe('New Playlist');
+    });
+
+    it('keeps existing local entry on key conflict (existing-wins)', () => {
+      scrobbleExclusionStore.getState().addExclusion('album', 'al1', 'Local Album');
+
+      const result = scrobbleExclusionStore.getState().mergeExclusions({
+        excludedAlbums: { al1: { id: 'al1', name: 'Backup Album' } },
+      });
+
+      expect(result).toEqual({ added: 0, skipped: 1 });
+      expect(scrobbleExclusionStore.getState().excludedAlbums.al1.name).toBe('Local Album');
+    });
+
+    it('handles missing dicts in incoming payload', () => {
+      const result = scrobbleExclusionStore.getState().mergeExclusions({
+        excludedAlbums: { al1: { id: 'al1', name: 'A' } },
+      });
+
+      expect(result).toEqual({ added: 1, skipped: 0 });
+    });
+
+    it('skips invalid entries', () => {
+      const result = scrobbleExclusionStore.getState().mergeExclusions({
+        excludedAlbums: {
+          al1: null as any,
+          al2: { id: '', name: 'no id' } as any,
+        },
+      });
+
+      expect(result).toEqual({ added: 0, skipped: 2 });
+    });
+  });
 });

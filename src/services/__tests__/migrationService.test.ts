@@ -40,6 +40,24 @@ jest.mock('../../store/persistence/pendingScrobbleTable', () => ({
   countPendingScrobbles: jest.fn(() => 0),
 }));
 
+// Migration #21 imports deviceIdentityStore which transitively pulls
+// expo-device + expo-crypto + i18n. Mock the store and the native modules
+// so the migration runs without dragging the native bridge into the test.
+jest.mock('../../store/deviceIdentityStore', () => ({
+  deviceIdentityStore: {
+    getState: () => ({
+      deviceId: 'mock-device-id',
+      deviceName: null,
+      deviceLabel: 'Your Mock Device',
+      deviceLabelUserSet: false,
+      refreshDeviceName: jest.fn(),
+      ensureDefaultLabel: jest.fn(),
+    }),
+    setState: jest.fn(),
+  },
+  getDeviceShortId: () => 'mock1234',
+}));
+
 // Task #14 calls bulkReplace to write the v2 rows. Mock the whole module so
 // tests don't need a real SQLite handle; assertions are on the mock calls.
 jest.mock('../../store/persistence/musicCacheTables', () => ({
@@ -1569,7 +1587,12 @@ describe('Task 14 – Move music cache to per-row SQLite tables and album-rooted
       await runMigrations(13);
 
       expect(mockFileMove).not.toHaveBeenCalled();
-      expect(mockListDirectoryAsync).not.toHaveBeenCalled();
+      // Task 14's music-cache filesystem walk should not run when the
+      // cache dir is absent. Migration 21 (added later) walks the backup
+      // directory unconditionally — assert specifically on the music-cache
+      // URI rather than "no calls at all".
+      const calls = mockListDirectoryAsync.mock.calls.map((c) => String(c[0]));
+      expect(calls.some((u) => u.includes('musicCache'))).toBe(false);
       // SQL side of the migration still ran.
       expect(mockBulkReplace).toHaveBeenCalledTimes(1);
       // Task 14 removes the v1 blob once per-row tables hold canonical state.

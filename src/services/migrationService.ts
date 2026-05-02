@@ -15,7 +15,8 @@ import { Platform } from 'react-native';
 
 import { defaultCollator } from '../utils/intl';
 
-import { migrateV3BackupMetas } from './backupService';
+import { migrateV3BackupMetas, migrateV4BackupMetas } from './backupService';
+import { deviceIdentityStore } from '../store/deviceIdentityStore';
 import { getAllSongAlbumIds } from '../store/persistence/detailTables';
 import {
   completedScrobbleStore,
@@ -1802,6 +1803,44 @@ const MIGRATION_TASKS: MigrationTask[] = [
       // and any listing UI sees tracks in their intended sequence —
       // data now preserved thanks to Migration 18's `raw_json` backfill.
       await backfillMissingPartialAlbums(log);
+    },
+  },
+
+  {
+    id: 21,
+    name: 'Tag device + upgrade backups to v5',
+    run: async (log) => {
+      // Initialise + force-persist the deviceIdentityStore so the freshly-
+      // generated UUID survives the next launch. Zustand persist only saves
+      // on explicit setState — the initializer's UUID is otherwise ephemeral
+      // until the user touches a setter. Without this forced persist, the
+      // deviceId stamped into backup files this run would not match the
+      // deviceId on subsequent launches.
+      const identity = deviceIdentityStore.getState();
+      identity.refreshDeviceName();
+      identity.ensureDefaultLabel();
+      const refreshed = deviceIdentityStore.getState();
+      // Force a persist by re-setting the current state — guarantees the
+      // UUID + label land in storage on the very first launch.
+      deviceIdentityStore.setState({
+        deviceId: refreshed.deviceId,
+        deviceName: refreshed.deviceName,
+        deviceLabel: refreshed.deviceLabel,
+        deviceLabelUserSet: refreshed.deviceLabelUserSet,
+      });
+
+      log(`Device identity: ${refreshed.deviceLabel} (${refreshed.deviceId.slice(0, 8)}…)`);
+
+      const count = await migrateV4BackupMetas(
+        refreshed.deviceId,
+        refreshed.deviceName,
+        refreshed.deviceLabel,
+      );
+      if (count > 0) {
+        log(`Upgraded ${count} backup(s) from v4 to v5 with this device's identity.`);
+      } else {
+        log('No v4 backup files found — skipping.');
+      }
     },
   },
 

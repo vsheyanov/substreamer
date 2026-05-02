@@ -43,6 +43,7 @@ import { albumLibraryStore } from '../store/albumLibraryStore';
 import { authStore } from '../store/authStore';
 import { backupStore } from '../store/backupStore';
 import { completedScrobbleStore } from '../store/completedScrobbleStore';
+import { deviceIdentityStore } from '../store/deviceIdentityStore';
 import { songIndexStore } from '../store/songIndexStore';
 import { syncStatusStore } from '../store/syncStatusStore';
 import { mbidOverrideStore } from '../store/mbidOverrideStore';
@@ -137,6 +138,9 @@ export function SettingsLibraryDataScreen() {
   const [backingUp, setBackingUp] = useState(false);
   const restoreTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
+  // --- Device identity (read-only here; the editor lives in Server & Account) ---
+  const localDeviceId = deviceIdentityStore((s) => s.deviceId);
+
   const otherChevronRotation = useSharedValue(0);
   const otherChevronStyle = useAnimatedStyle(() => ({
     transform: [{ rotate: `${otherChevronRotation.value}deg` }],
@@ -219,6 +223,33 @@ export function SettingsLibraryDataScreen() {
     setSelectedBackup((prev) => prev?.stem === entry.stem ? null : entry);
   }, [restoreState]);
 
+  const performRestore = useCallback(
+    (entry: BackupEntry, mode: 'replace' | 'merge') => async () => {
+      setRestoreState('restoring');
+      const [result] = await Promise.allSettled([
+        restoreBackup(entry, mode),
+        minDelay(MIN_SPINNER_MS),
+      ]);
+
+      if (result.status === 'fulfilled') {
+        setRestoreState('success');
+        restoreTimer.current = setTimeout(() => {
+          setRestoreSheetVisible(false);
+          setRestoreBackupsList([]);
+          setOtherBackups([]);
+          setSelectedBackup(null);
+          setRestoreState('idle');
+        }, SUCCESS_DELAY_MS);
+      } else {
+        setRestoreState('error');
+        restoreTimer.current = setTimeout(() => {
+          setRestoreState('idle');
+        }, ERROR_DELAY_MS);
+      }
+    },
+    [],
+  );
+
   const handleRestore = useCallback(async () => {
     if (!selectedBackup) return;
 
@@ -245,6 +276,37 @@ export function SettingsLibraryDataScreen() {
       timeStyle: 'short',
     });
 
+    // Cross-device backup detection: backup carries a deviceId that doesn't
+    // match this device. v3/v4 backups (no deviceId) fall into the same-
+    // device path — there's no way to know they came from elsewhere, so
+    // the existing single-action Replace flow stays.
+    const isCrossDevice = entry.deviceId !== null && entry.deviceId !== localDeviceId;
+
+    if (isCrossDevice) {
+      const deviceName = entry.deviceLabel ?? t('unknownDevice');
+      alert(
+        t('restoreCrossDeviceConfirm', { device: deviceName }),
+        t('restoreCrossDeviceConfirmMessage', {
+          device: deviceName,
+          date: dateStr,
+          details: parts.join(', '),
+        }),
+        [
+          { text: t('cancel'), style: 'cancel' },
+          {
+            text: t('restoreReplace'),
+            style: 'destructive',
+            onPress: performRestore(entry, 'replace'),
+          },
+          {
+            text: t('restoreMerge'),
+            onPress: performRestore(entry, 'merge'),
+          },
+        ],
+      );
+      return;
+    }
+
     alert(
       t('restoreBackupConfirm'),
       t('restoreBackupConfirmMessage', { date: dateStr, details: parts.join(', ') }),
@@ -253,33 +315,11 @@ export function SettingsLibraryDataScreen() {
         {
           text: t('restore'),
           style: 'destructive',
-          onPress: async () => {
-            setRestoreState('restoring');
-            const [result] = await Promise.allSettled([
-              restoreBackup(entry),
-              minDelay(MIN_SPINNER_MS),
-            ]);
-
-            if (result.status === 'fulfilled') {
-              setRestoreState('success');
-              restoreTimer.current = setTimeout(() => {
-                setRestoreSheetVisible(false);
-                setRestoreBackupsList([]);
-                setOtherBackups([]);
-                setSelectedBackup(null);
-                setRestoreState('idle');
-              }, SUCCESS_DELAY_MS);
-            } else {
-              setRestoreState('error');
-              restoreTimer.current = setTimeout(() => {
-                setRestoreState('idle');
-              }, ERROR_DELAY_MS);
-            }
-          },
+          onPress: performRestore(entry, 'replace'),
         },
       ],
     );
-  }, [selectedBackup, restoreState]);
+  }, [selectedBackup, restoreState, localDeviceId, alert, t, performRestore]);
 
   // --- Shares state ---
   const showShares = !offlineMode && canUserShare();
@@ -542,6 +582,9 @@ export function SettingsLibraryDataScreen() {
                 : t('never')}
             </Text>
           </View>
+          {/* Device name editor lives in Server & Account → Account so all
+              identity fields stay together. The "this device" badge on
+              backup rows below uses the same label. */}
           <View style={styles.backupButtonRow}>
             <Pressable
               onPress={handleBackUpNow}
@@ -576,6 +619,9 @@ export function SettingsLibraryDataScreen() {
         </View>
         <Text style={[styles.backupDescription, { color: colors.textSecondary }]}>
           {Platform.OS === 'ios' ? t('backupDescriptionIos') : t('backupDescriptionAndroid')}
+        </Text>
+        <Text style={[styles.backupDescription, { color: colors.textSecondary }]}>
+          {t('deviceNameLocationHint')}
         </Text>
       </View>
 
@@ -693,14 +739,26 @@ export function SettingsLibraryDataScreen() {
                     pressed && styles.restoreRowPressed,
                   ]}
                 >
-                  <Text
-                    style={[
-                      styles.restoreRowTitle,
-                      { color: colors.textPrimary },
-                      isSelected && { color: colors.primary },
-                    ]}
-                  >
-                    {dateStr}
+                  <View style={styles.restoreRowTitleLine}>
+                    <Text
+                      style={[
+                        styles.restoreRowTitle,
+                        { color: colors.textPrimary },
+                        isSelected && { color: colors.primary },
+                      ]}
+                    >
+                      {dateStr}
+                    </Text>
+                    {entry.deviceId === localDeviceId && (
+                      <View style={[styles.thisDeviceBadge, { backgroundColor: colors.primary + '22', borderColor: colors.primary }]}>
+                        <Text style={[styles.thisDeviceBadgeText, { color: colors.primary }]}>
+                          {t('thisDevice')}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text style={[styles.restoreRowDevice, { color: colors.textSecondary }]}>
+                    {entry.deviceLabel ?? t('unknownDevice')}
                   </Text>
                   <Text style={[styles.restoreRowDetail, { color: colors.textSecondary }]}>
                     {details.join(', ')} · {formatBytes(entryTotalBytes)}
@@ -752,14 +810,26 @@ export function SettingsLibraryDataScreen() {
                         pressed && styles.restoreRowPressed,
                       ]}
                     >
-                      <Text
-                        style={[
-                          styles.restoreRowTitle,
-                          { color: colors.textPrimary },
-                          isSelected && { color: colors.primary },
-                        ]}
-                      >
-                        {dateStr}
+                      <View style={styles.restoreRowTitleLine}>
+                        <Text
+                          style={[
+                            styles.restoreRowTitle,
+                            { color: colors.textPrimary },
+                            isSelected && { color: colors.primary },
+                          ]}
+                        >
+                          {dateStr}
+                        </Text>
+                        {entry.deviceId === localDeviceId && (
+                          <View style={[styles.thisDeviceBadge, { backgroundColor: colors.primary + '22', borderColor: colors.primary }]}>
+                            <Text style={[styles.thisDeviceBadgeText, { color: colors.primary }]}>
+                              {t('thisDevice')}
+                            </Text>
+                          </View>
+                        )}
+                      </View>
+                      <Text style={[styles.restoreRowDevice, { color: colors.textSecondary }]}>
+                        {entry.deviceLabel ?? t('unknownDevice')}
                       </Text>
                       <Text style={[styles.restoreRowDetail, { color: colors.textSecondary }]}>
                         {details.join(', ')} · {formatBytes(entryTotalBytes)}
@@ -992,9 +1062,18 @@ const styles = StyleSheet.create({
   restoreRowPressed: {
     opacity: 0.6,
   },
+  restoreRowTitleLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
   restoreRowTitle: {
     fontSize: 16,
     fontWeight: '600',
+  },
+  restoreRowDevice: {
+    fontSize: 13,
+    fontWeight: '500',
   },
   restoreRowDetail: {
     fontSize: 12,
@@ -1002,6 +1081,16 @@ const styles = StyleSheet.create({
   restoreRowServer: {
     fontSize: 12,
     fontStyle: 'italic',
+  },
+  thisDeviceBadge: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  thisDeviceBadgeText: {
+    fontSize: 11,
+    fontWeight: '600',
   },
   otherBackupsHeader: {
     flexDirection: 'row',
