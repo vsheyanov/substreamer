@@ -135,19 +135,32 @@ export const NowPlayingIndicator = memo(function NowPlayingIndicator({
       });
     } else {
       // Freeze at a mid-height so the indicator still reads as present
-      // when playback is paused but the same track is loaded.
+      // when playback is paused but the same track is loaded. Assigning
+      // a new animation to sv.value automatically supersedes whatever
+      // animation was in flight — no manual cancelAnimation needed.
       shared.forEach((sv) => {
-        cancelAnimation(sv);
         sv.value = withTiming(BAR_PAUSED_FRACTION, { duration: 200 });
       });
     }
-    return () => {
-      shared.forEach((sv) => cancelAnimation(sv));
-    };
-    // shared array is freshly allocated each render but the underlying
-    // SharedValue refs are stable, so we can omit it from deps.
+    // Intentionally NO cleanup `cancelAnimation` here. Earlier versions
+    // cancelled on every dep change, which created a race on the UI
+    // thread when isPlaying flipped pause→play: the cleanup's cancel
+    // could arrive after the body's `sv.value = withRepeat(...)`, and
+    // since cancelAnimation freezes the SV at its current value, the
+    // bars would stay frozen at the paused mid-height. Reanimated
+    // automatically replaces an SV's animation on a new assignment, so
+    // the only cancel we actually need is for component unmount —
+    // handled by the separate effect below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isPlaying, barCount]);
+
+  // Unmount-only: stop any in-flight animations so they don't leak.
+  useEffect(() => {
+    return () => {
+      [sv0, sv1, sv2].forEach((sv) => cancelAnimation(sv));
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Bar geometry: equal-width bars with equal gaps, totalling `size`.
   const gap = Math.max(1, Math.floor(size / (barCount * 4)));
