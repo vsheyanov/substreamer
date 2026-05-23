@@ -74,7 +74,8 @@
             "minSdkVersion": 29,
             "enableMinifyInReleaseBuilds": true,
             "enableShrinkResourcesInReleaseBuilds": true,
-            "useLegacyPackaging": true
+            "useLegacyPackaging": true,
+            "usePrecompiledHeaders": true
           }
         }
       ],
