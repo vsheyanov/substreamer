@@ -8,6 +8,18 @@ jest.mock('expo-sqlite', () => ({
 
 jest.mock('../../store/persistence/kvStorage', () => require('../../store/persistence/__mocks__/kvStorage'));
 
+// Override isDbHealthy to return true by default so existing priority-ladder
+// tests aren't suppressed by the (priority-1) PersistenceDegradedBanner. The
+// persistence-degraded scenario gets its own focused test below.
+let mockDbHealthy = true;
+jest.mock('../../store/persistence', () => {
+  const actual = jest.requireActual('../../store/persistence');
+  return {
+    ...actual,
+    isDbHealthy: () => mockDbHealthy,
+  };
+});
+
 jest.mock('../ConnectivityBanner', () => ({
   ConnectivityBanner: () => {
     const React = require('react');
@@ -32,6 +44,14 @@ jest.mock('../LibrarySyncBanner', () => ({
   },
 }));
 
+jest.mock('../PersistenceDegradedBanner', () => ({
+  PersistenceDegradedBanner: () => {
+    const React = require('react');
+    const { Text } = require('react-native');
+    return React.createElement(Text, { testID: 'banner-persistence-degraded' }, 'persistence-degraded');
+  },
+}));
+
 import { BannerStack } from '../BannerStack';
 import { connectivityStore } from '../../store/connectivityStore';
 import { offlineModeStore } from '../../store/offlineModeStore';
@@ -39,6 +59,7 @@ import { storageLimitStore } from '../../store/storageLimitStore';
 import { syncStatusStore } from '../../store/syncStatusStore';
 
 function resetAll() {
+  mockDbHealthy = true;
   connectivityStore.setState({ bannerState: 'hidden' } as any);
   offlineModeStore.setState({ offlineMode: false } as any);
   storageLimitStore.setState({ isStorageFull: false } as any);
@@ -126,5 +147,23 @@ describe('BannerStack — priority selection', () => {
     const { queryByTestId } = render(<BannerStack />);
     expect(queryByTestId('banner-storage')).not.toBeNull();
     expect(queryByTestId('banner-library-sync')).toBeNull();
+  });
+
+  it('persistence-degraded banner takes priority over every other banner', () => {
+    mockDbHealthy = false;
+    connectivityStore.setState({ bannerState: 'ssl-error' } as any);
+    storageLimitStore.setState({ isStorageFull: true } as any);
+    syncStatusStore.setState({ detailSyncPhase: 'error' });
+    const { queryByTestId } = render(<BannerStack />);
+    expect(queryByTestId('banner-persistence-degraded')).not.toBeNull();
+    expect(queryByTestId('banner-connectivity')).toBeNull();
+    expect(queryByTestId('banner-storage')).toBeNull();
+    expect(queryByTestId('banner-library-sync')).toBeNull();
+  });
+
+  it('hides persistence-degraded banner when dbHealthy is true', () => {
+    mockDbHealthy = true;
+    const { queryByTestId } = render(<BannerStack />);
+    expect(queryByTestId('banner-persistence-degraded')).toBeNull();
   });
 });

@@ -64,6 +64,8 @@
   "itemQueued_many": "{{count}} items queued",
   "itemQueued_other": "{{count}} items queued",
   "storageLimitReached": "Storage limit reached",
+  "persistenceDegradedBanner": "Storage unavailable — settings won't persist",
+  "persistenceDegradedLoginError": "Storage unavailable on this device. Login can't be saved — try restarting the app.",
   "offline": "Offline",
   "downloaded": "Downloaded",
   "searchPlaceholder": "Search...",

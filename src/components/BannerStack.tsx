@@ -4,23 +4,28 @@
  * wins and suppresses the others.
  *
  * Ladder (highest priority first — matches the plan document):
- *   1. SSL-error / network-unreachable / reconnected (ConnectivityBanner)
- *   2. Storage full (StorageFullBanner)
- *   3. Library-sync error variants: paused-auth-error, paused-metered, error
+ *   1. Persistence degraded (PersistenceDegradedBanner) — sticky session-long
+ *      signal that writes won't survive relaunch; user MUST know about it
+ *      even if connectivity is also broken
+ *   2. SSL-error / network-unreachable / reconnected (ConnectivityBanner)
+ *   3. Storage full (StorageFullBanner)
+ *   4. Library-sync error variants: paused-auth-error, paused-metered, error
  *      (LibrarySyncBanner — actionable failures rank above a plain offline
  *      state so users see "reauthenticate" before "offline")
- *   4. (reserved — no connectivity "offline" variant exists today;
+ *   5. (reserved — no connectivity "offline" variant exists today;
  *      ConnectivityBanner hides itself when the user enables offline mode)
- *   5. Library-sync progress / paused-offline variants (LibrarySyncBanner)
+ *   6. Library-sync progress / paused-offline variants (LibrarySyncBanner)
  */
 
 import { memo } from 'react';
 
 import { ConnectivityBanner } from './ConnectivityBanner';
 import { LibrarySyncBanner } from './LibrarySyncBanner';
+import { PersistenceDegradedBanner } from './PersistenceDegradedBanner';
 import { StorageFullBanner } from './StorageFullBanner';
 import { connectivityStore } from '../store/connectivityStore';
 import { offlineModeStore } from '../store/offlineModeStore';
+import { isDbHealthy } from '../store/persistence';
 import { storageLimitStore } from '../store/storageLimitStore';
 import { syncStatusStore } from '../store/syncStatusStore';
 
@@ -29,6 +34,11 @@ export const BannerStack = memo(function BannerStack() {
   const offlineMode = offlineModeStore((s) => s.offlineMode);
   const isStorageFull = storageLimitStore((s) => s.isStorageFull);
   const syncPhase = syncStatusStore((s) => s.detailSyncPhase);
+
+  // Persistence-degraded is sticky and captured at module load. If SQLite
+  // failed to open, surface this above everything else so the user knows
+  // settings/login won't persist.
+  if (!isDbHealthy()) return <PersistenceDegradedBanner />;
 
   // ConnectivityBanner internally hides itself when offlineMode is true (see
   // ConnectivityBanner.tsx:62). Mirror that logic here so the priority

@@ -2,6 +2,20 @@ import { type StateStorage } from 'zustand/middleware';
 
 import { getDb, kvFallback } from './db';
 
+// Fires once per process the first time any kvStorage operation falls back
+// to the in-memory Map. `db.ts` already logs at init time, but that warn is
+// silent w.r.t. *when* writes are actually being dropped — this surface
+// makes that explicit at the first persist-store hit.
+let _fallbackWarned = false;
+function warnFallbackOnce(op: string, key: string): void {
+  if (_fallbackWarned) return;
+  _fallbackWarned = true;
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[kvStorage] SQLite unavailable; writes are ephemeral. First fallback at ${op}(${key}).`,
+  );
+}
+
 /**
  * Zustand `StateStorage` adapter backed by the shared SQLite handle. Stores
  * each Zustand-persist blob as one row in the `storage(key, value)` table.
@@ -14,8 +28,8 @@ import { getDb, kvFallback } from './db';
  * When `db.ts` fails to open SQLite (seen on stripped / corrupted Android
  * OEM ROMs), all four operations fall through to an in-memory `Map` owned
  * by `db.ts` so the UI can still render. Writes in that mode don't survive
- * a relaunch — `dbHealthy` (exported from `db.ts`) lets the UI surface the
- * degraded state if needed.
+ * a relaunch — `isDbHealthy()` (exported from `db.ts`) lets the UI surface
+ * the degraded state if needed.
  *
  * Row-table modules (musicCacheTables, scrobbleTable, detailTables) don't
  * get this memory fallback — silently writing per-row data nowhere is worse
@@ -38,6 +52,7 @@ export const kvStorage: StateStorage = {
   setItem(key: string, value: string): void {
     const db = getDb();
     if (db === null) {
+      warnFallbackOnce('setItem', key);
       kvFallback.set(key, value);
       return;
     }
@@ -53,6 +68,7 @@ export const kvStorage: StateStorage = {
   removeItem(key: string): void {
     const db = getDb();
     if (db === null) {
+      warnFallbackOnce('removeItem', key);
       kvFallback.delete(key);
       return;
     }

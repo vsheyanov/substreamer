@@ -20,6 +20,7 @@ import { fetchServerInfo, login as subsonicLogin } from '../services/subsonicSer
 import { trustCertificateForHost } from '../services/sslTrustService';
 import { authStore } from '../store/authStore';
 import { onboardingStore } from '../store/onboardingStore';
+import { isDbHealthy } from '../store/persistence';
 import { serverInfoStore } from '../store/serverInfoStore';
 
 import {
@@ -139,6 +140,13 @@ export function LoginScreen() {
   };
 
   const handleSubmit = async () => {
+    // Refuse login when SQLite failed to open. Otherwise the session would
+    // be written to the in-memory fallback and silently vanish on relaunch.
+    if (!isDbHealthy()) {
+      setError(t('persistenceDegradedLoginError'));
+      return;
+    }
+
     const url = serverUrl.trim();
     const user = username.trim();
     const pass = password;

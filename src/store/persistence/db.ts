@@ -264,8 +264,22 @@ export function getDb(): InternalDb | null {
   return db;
 }
 
-/** True when the SQLite-backing store initialized successfully. */
-export const dbHealthy: boolean = db !== null;
+/**
+ * True when the SQLite-backing store is currently available.
+ *
+ * Implemented as a function (not a const captured at module load) so callers
+ * see live state — both for the rare runtime swap via `__setDbForTests` and
+ * because destructured ESM-import bindings under our CommonJS-style test
+ * transpile are otherwise frozen at first import.
+ *
+ * In production the db handle is opened once at module load and never
+ * reassigned, so this stays effectively constant for the JS bundle's
+ * lifetime — but the function form keeps both consumers honest and tests
+ * trivially mockable.
+ */
+export function isDbHealthy(): boolean {
+  return db !== null;
+}
 
 /** The error captured at init time, or null on success. */
 export const dbInitError: Error | null = initError;

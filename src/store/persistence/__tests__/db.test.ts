@@ -10,7 +10,7 @@ describe('persistence/db (happy path)', () => {
   let mockWithTransactionSync: jest.Mock;
   let getDb: typeof import('../db').getDb;
   let __setDbForTests: typeof import('../db').__setDbForTests;
-  let dbHealthy: boolean;
+  let isDbHealthy: typeof import('../db').isDbHealthy;
   let dbInitError: Error | null;
 
   beforeAll(() => {
@@ -32,13 +32,13 @@ describe('persistence/db (happy path)', () => {
       const mod = require('../db');
       getDb = mod.getDb;
       __setDbForTests = mod.__setDbForTests;
-      dbHealthy = mod.dbHealthy;
+      isDbHealthy = mod.isDbHealthy;
       dbInitError = mod.dbInitError;
     });
   });
 
   it('reports healthy with no init error', () => {
-    expect(dbHealthy).toBe(true);
+    expect(isDbHealthy()).toBe(true);
     expect(dbInitError).toBeNull();
   });
 
@@ -149,7 +149,7 @@ describe('persistence/db (happy path)', () => {
 describe('persistence/db (init failure)', () => {
   let getDb: typeof import('../db').getDb;
   let kvFallback: Map<string, string>;
-  let dbHealthy: boolean;
+  let isDbHealthy: typeof import('../db').isDbHealthy;
   let dbInitError: Error | null;
   let warnSpy: jest.SpyInstance;
 
@@ -164,7 +164,7 @@ describe('persistence/db (init failure)', () => {
       const mod = require('../db');
       getDb = mod.getDb;
       kvFallback = mod.kvFallback;
-      dbHealthy = mod.dbHealthy;
+      isDbHealthy = mod.isDbHealthy;
       dbInitError = mod.dbInitError;
     });
   });
@@ -174,7 +174,7 @@ describe('persistence/db (init failure)', () => {
   });
 
   it('reports unhealthy and captures the init error', () => {
-    expect(dbHealthy).toBe(false);
+    expect(isDbHealthy()).toBe(false);
     expect(dbInitError).toBeInstanceOf(Error);
     expect(dbInitError?.message).toContain('OEM ICU/JSSE failure');
   });
