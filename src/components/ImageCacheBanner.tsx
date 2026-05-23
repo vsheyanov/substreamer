@@ -1,14 +1,13 @@
 /**
- * Pill-style notification banner for the post-Migration-22 cover-art
- * recache pass. Shares the visual language of `LibrarySyncBanner` and
- * `StorageFullBanner` — a dark capsule centered below the header,
- * rendered via the priority ladder in `BannerStack`.
+ * Pill-style notification banner for the persistent image-cache refresh
+ * cycle. Shows progress while a cycle is running (or paused). Renamed
+ * from `CoverArtRecacheBanner` when the Migration-22 single-shot recache
+ * was replaced with the queueable, pause/resume/cancel-able refresh in
+ * Phase 3 of the image-cache queue rework.
  *
- * Original implementation styled this as a `DownloadBanner`-shaped full-
- * width bar rendered inside `BottomChrome`. That was the wrong family —
- * cover-art recache is a transient library-data signal, not a download.
- * Moved to the top-of-tabs banner stack to match the library-sync
- * progress banner.
+ * Visual language matches `LibrarySyncBanner` / `StorageFullBanner` —
+ * dark capsule centred below the header, rendered via the priority
+ * ladder in `BannerStack`.
  */
 
 import Ionicons from '@react-native-vector-icons/ionicons/static';
@@ -24,7 +23,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
-import { coverArtRecacheStore } from '../store/coverArtRecacheStore';
+import { imageDownloadQueueStore } from '../store/imageDownloadQueueStore';
 
 const CAPSULE_HEIGHT = 44;
 const CAPSULE_BORDER_RADIUS = CAPSULE_HEIGHT / 2;
@@ -39,13 +38,14 @@ const LAYOUT_EASING = Easing.inOut(Easing.cubic);
 
 const ACCENT_BLUE = '#1D9BF0';
 
-export const CoverArtRecacheBanner = memo(function CoverArtRecacheBanner() {
+export const ImageCacheBanner = memo(function ImageCacheBanner() {
   const { t } = useTranslation();
-  const status = coverArtRecacheStore((s) => s.status);
-  const total = coverArtRecacheStore((s) => s.total);
-  const processed = coverArtRecacheStore((s) => s.processed);
+  const cycleId = imageDownloadQueueStore((s) => s.cycleId);
+  const cycleTotal = imageDownloadQueueStore((s) => s.cycleTotal);
+  const cycleProcessed = imageDownloadQueueStore((s) => s.cycleProcessed);
+  const isPaused = imageDownloadQueueStore((s) => s.isPaused);
 
-  const visible = status === 'running' && total > 0;
+  const visible = cycleId !== null && cycleTotal > 0;
 
   const prevVisible = useRef(visible);
 
@@ -83,14 +83,20 @@ export const CoverArtRecacheBanner = memo(function CoverArtRecacheBanner() {
 
   if (!visible) return null;
 
-  const label = t('coverArtRecacheBannerLabel', 'Updating cover art');
-  const countText = `${processed} / ${total}`;
+  const label = isPaused
+    ? t('imageCacheBannerPausedLabel', 'Paused')
+    : t('imageCacheBannerRunningLabel', 'Refreshing covers');
+  const countText = `${cycleProcessed} / ${cycleTotal}`;
 
   return (
     <Animated.View style={[styles.outer, containerStyle]}>
       <View style={styles.pillContainer}>
         <Animated.View style={[styles.capsule, capsuleStyle]}>
-          <Ionicons name="sync" size={16} color={ACCENT_BLUE} />
+          <Ionicons
+            name={isPaused ? 'pause' : 'sync'}
+            size={16}
+            color={ACCENT_BLUE}
+          />
           <Text style={styles.label} numberOfLines={1}>
             {label} {countText}
           </Text>

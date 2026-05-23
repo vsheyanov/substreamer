@@ -1,6 +1,7 @@
 import { albumDetailStore } from '../albumDetailStore';
 import { completedScrobbleStore } from '../completedScrobbleStore';
 import { imageCacheStore } from '../imageCacheStore';
+import { imageDownloadQueueStore } from '../imageDownloadQueueStore';
 import { musicCacheStore } from '../musicCacheStore';
 import { pendingScrobbleStore } from '../pendingScrobbleStore';
 import { songIndexStore } from '../songIndexStore';
@@ -44,6 +45,7 @@ export function rehydrateAllStores(): RehydrationResult {
     ['pendingScrobble', () => pendingScrobbleStore.getState().hydrateFromDb()],
     ['musicCache', () => musicCacheStore.getState().hydrateFromDb()],
     ['imageCache', () => imageCacheStore.getState().hydrateFromDb()],
+    ['imageDownloadQueue', () => imageDownloadQueueStore.getState().hydrateFromDb()],
   ];
   for (const [name, hydrate] of stores) {
     try {

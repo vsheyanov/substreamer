@@ -60,8 +60,8 @@ import { useLibrarySyncKeepAwake } from '../hooks/useLibrarySyncKeepAwake';
 import {
   deferredImageCacheInit,
   initImageCache,
-  pauseCoverArtRecache,
-  triggerCoverArtRecache,
+  processImageQueue,
+  recoverStalledImageDownloads,
 } from '../services/imageCacheService';
 import { connectivityStore } from '../store/connectivityStore';
 import { deferredMusicCacheInit, getMusicCacheStats, initMusicCache } from '../services/musicCacheService';
@@ -237,10 +237,11 @@ async function runDeferredStartup(getCancelled: () => boolean): Promise<void> {
   await stage('deferredDataSyncInit', () => deferredDataSyncInit());
   if (getCancelled()) return;
 
-  // Kick the post-Migration-22 cover-art recache if pending. Idempotent
-  // — bails out cleanly if the migration's already done or there are
-  // no downloaded items to refresh.
-  await stage('triggerCoverArtRecache', () => triggerCoverArtRecache('auto'));
+  // Recover any image-download-queue rows left stalled by a previous
+  // session (in 'downloading' or 'error'), then drain whatever's queued.
+  // Both stages are no-ops when there's nothing to do.
+  await stage('recoverStalledImageDownloads', () => recoverStalledImageDownloads());
+  await stage('processImageQueue', () => processImageQueue());
 }
 
 export default function RootLayout() {
@@ -356,7 +357,9 @@ export default function RootLayout() {
     const unsub = connectivityStore.subscribe((state) => {
       const reachableNow = state.isServerReachable && state.isInternetReachable;
       if (reachableNow && !prevReachable) {
-        void triggerCoverArtRecache('auto');
+        // Drain anything left in the persistent image queue (queued or
+        // recovered-from-stalled). No-op when the queue is empty or paused.
+        void processImageQueue();
       }
       prevReachable = reachableNow;
     });
@@ -369,10 +372,9 @@ export default function RootLayout() {
     const sub = AppState.addEventListener('change', (next) => {
       if (next === 'active') {
         void recoverStalledSync();
-      } else if (next === 'background' || next === 'inactive') {
-        // Pause any in-flight cover-art recache; it'll resume on the
-        // next 'active' transition or connectivity restoration.
-        pauseCoverArtRecache();
+        // Resume image-cache draining if a cycle is mid-flight and the
+        // user hasn't explicitly paused it. Respects isPaused internally.
+        void processImageQueue();
       }
     });
     return () => sub.remove();

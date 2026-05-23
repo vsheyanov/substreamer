@@ -15,20 +15,20 @@
  *   5. (reserved — no connectivity "offline" variant exists today;
  *      ConnectivityBanner hides itself when the user enables offline mode)
  *   6. Library-sync progress / paused-offline variants (LibrarySyncBanner)
- *   7. Cover-art recache progress (CoverArtRecacheBanner) — transient
- *      post-Migration-22 sweep; ranks below library-sync progress because
- *      metadata catch-up is the higher-priority data signal
+ *   7. Image-cache refresh progress (ImageCacheBanner) — transient
+ *      user-initiated cover-art refresh cycle; ranks below library-sync
+ *      progress because metadata catch-up is the higher-priority signal
  */
 
 import { memo } from 'react';
 
 import { ConnectivityBanner } from './ConnectivityBanner';
-import { CoverArtRecacheBanner } from './CoverArtRecacheBanner';
+import { ImageCacheBanner } from './ImageCacheBanner';
 import { LibrarySyncBanner } from './LibrarySyncBanner';
 import { PersistenceDegradedBanner } from './PersistenceDegradedBanner';
 import { StorageFullBanner } from './StorageFullBanner';
 import { connectivityStore } from '../store/connectivityStore';
-import { coverArtRecacheStore } from '../store/coverArtRecacheStore';
+import { imageDownloadQueueStore } from '../store/imageDownloadQueueStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { isDbHealthy } from '../store/persistence';
 import { storageLimitStore } from '../store/storageLimitStore';
@@ -39,8 +39,8 @@ export const BannerStack = memo(function BannerStack() {
   const offlineMode = offlineModeStore((s) => s.offlineMode);
   const isStorageFull = storageLimitStore((s) => s.isStorageFull);
   const syncPhase = syncStatusStore((s) => s.detailSyncPhase);
-  const recacheStatus = coverArtRecacheStore((s) => s.status);
-  const recacheTotal = coverArtRecacheStore((s) => s.total);
+  const imageQueueCycleId = imageDownloadQueueStore((s) => s.cycleId);
+  const imageQueueTotal = imageDownloadQueueStore((s) => s.cycleTotal);
 
   // Persistence-degraded is sticky and captured at module load. If SQLite
   // failed to open, surface this above everything else so the user knows
@@ -69,8 +69,8 @@ export const BannerStack = memo(function BannerStack() {
     return <LibrarySyncBanner />;
   }
 
-  if (recacheStatus === 'running' && recacheTotal > 0) {
-    return <CoverArtRecacheBanner />;
+  if (imageQueueCycleId !== null && imageQueueTotal > 0) {
+    return <ImageCacheBanner />;
   }
   return null;
 });

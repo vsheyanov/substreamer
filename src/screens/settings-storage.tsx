@@ -17,14 +17,14 @@ import { useThemedAlert } from '../hooks/useThemedAlert';
 import { ThemedAlert } from '../components/ThemedAlert';
 import {
   clearImageCache,
+  enqueueImageRefreshCycle,
   reconcileImageCacheAsync,
   repairIncompleteImagesAsync,
-  triggerCoverArtRecache,
 } from '../services/imageCacheService';
 import { clearMusicCache } from '../services/musicCacheService';
 import { clearQueue } from '../services/playerService';
 import { checkStorageLimit, getFreeDiskSpace } from '../services/storageService';
-import { coverArtRecacheStore } from '../store/coverArtRecacheStore';
+import { imageDownloadQueueStore } from '../store/imageDownloadQueueStore';
 import {
   imageCacheStore,
   type MaxConcurrentImageDownloads,
@@ -75,14 +75,14 @@ export function SettingsStorageScreen() {
   const incompleteCount = imageCacheStore((s) => s.incompleteCount);
   const maxConcurrentImageDownloads = imageCacheStore((s) => s.maxConcurrentImageDownloads);
 
-  const recacheStatus = coverArtRecacheStore((s) => s.status);
-  const recacheTotal = coverArtRecacheStore((s) => s.total);
-  const recacheProcessed = coverArtRecacheStore((s) => s.processed);
-  const recacheRunning = recacheStatus === 'running' && recacheTotal > 0;
+  const recacheCycleId = imageDownloadQueueStore((s) => s.cycleId);
+  const recacheTotal = imageDownloadQueueStore((s) => s.cycleTotal);
+  const recacheProcessed = imageDownloadQueueStore((s) => s.cycleProcessed);
+  const recacheRunning = recacheCycleId !== null && recacheTotal > 0;
 
   const handleRefreshDownloadedCovers = useCallback(() => {
     if (recacheRunning) return;
-    void triggerCoverArtRecache('manual');
+    void enqueueImageRefreshCycle('refresh-downloads');
   }, [recacheRunning]);
   const cachedAlbumCount = albumDetailStore((s) => Object.keys(s.albums).length);
   const cachedArtistCount = artistDetailStore((s) => Object.keys(s.artists).length);

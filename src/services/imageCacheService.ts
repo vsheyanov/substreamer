@@ -36,7 +36,6 @@ import {
   markReconcileRan,
 } from '../store/imageCacheStore';
 import { connectivityStore } from '../store/connectivityStore';
-import { coverArtRecacheStore } from '../store/coverArtRecacheStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { fireAndForget } from '../utils/fireAndForget';
 import {
@@ -1508,153 +1507,11 @@ export function cacheEntityCoverArt(entities: Array<{ coverArt?: string }>): voi
   }
 }
 
-/* ------------------------------------------------------------------ */
-/*  Post-Migration-22 recache worker                                   */
-/* ------------------------------------------------------------------ */
-
-/** Concurrency budget for the recache pass — keeps the server happy. */
-const RECACHE_CONCURRENCY = 5;
-/** Pause between batches so we don't starve playback or other downloads. */
-const RECACHE_BATCH_GAP_MS = 200;
-
-let recacheActive = false;
-let recacheAbortRequested = false;
-
-/**
- * Walk every downloaded album/playlist and call refreshCachedImage()
- * under their canonical full cover-art IDs. Used by both the automatic
- * post-Migration-22 trigger and the manual "Refresh downloaded cover
- * art" entry in Settings → Storage.
- *
- *   - `auto`   only runs when `coverArtRecacheStore.status !== 'done'`.
- *   - `manual` always resets state and runs again.
- *
- * Safe to call multiple times concurrently — the second caller short-
- * circuits while the first is still running. The first pass walks the
- * full set; if connectivity drops mid-pass the loop exits and a future
- * trigger picks up from a fresh pending state.
- */
-export async function triggerCoverArtRecache(
-  reason: 'auto' | 'manual',
-): Promise<void> {
-  if (recacheActive) return;
-
-  const initialState = coverArtRecacheStore.getState();
-  // Auto-trigger skips only when a completion ALREADY covered per-song
-  // covers. Users who completed on the old scope (album/playlist rows
-  // only) are re-run automatically so songs inside downloaded playlists
-  // get their per-track covers refreshed.
-  if (reason === 'auto' && initialState.status === 'done' && initialState.coversSongs === true) {
-    return;
-  }
-
-  // Gate: need at least an internet-reachable signal. The worker itself
-  // handles per-fetch failures gracefully, so being online matters only
-  // to avoid lighting up the banner for nothing.
-  const conn = connectivityStore.getState();
-  if (!conn.isInternetReachable && !conn.isServerReachable) return;
-  if (offlineModeStore.getState().offlineMode) return;
-
-  // Snapshot the downloaded items we need to refresh. We walk THREE
-  // sources and dedup against a single `seen` set:
-  //   1. cached_items rows — album/playlist-level cover art
-  //   2. cached_songs rows — per-song cover art (which is typically the
-  //      album-art ID of the song's source album). This is the load-
-  //      bearing case for songs inside DOWNLOADED PLAYLISTS, where the
-  //      source album wasn't downloaded so its album-art ID never
-  //      appears in cached_items but the song's coverArt still needs
-  //      a refresh under the canonical ID format.
-  //   3. (skipped) other cached_items types like 'favorites' — they
-  //      either have no cover art or share one we already covered.
-  let coverIds: string[] = [];
-  try {
-    const { items, songCoverArtIds } = hydrateCachedItemsForRecache();
-    const seen = new Set<string>();
-    for (const it of items) {
-      if (!it.coverArtId) continue;
-      if (it.type !== 'album' && it.type !== 'playlist') continue;
-      if (seen.has(it.coverArtId)) continue;
-      seen.add(it.coverArtId);
-      coverIds.push(it.coverArtId);
-    }
-    for (const id of songCoverArtIds) {
-      if (seen.has(id)) continue;
-      seen.add(id);
-      coverIds.push(id);
-    }
-  } catch (e) {
-    logImageCache(`recache: snapshot threw ${e instanceof Error ? e.message : String(e)}`);
-    return;
-  }
-
-  if (coverIds.length === 0) {
-    coverArtRecacheStore.getState().begin(0, reason);
-    coverArtRecacheStore.getState().complete();
-    return;
-  }
-
-  recacheActive = true;
-  recacheAbortRequested = false;
-  coverArtRecacheStore.getState().begin(coverIds.length, reason);
-  logImageCache(`recache: ${reason} started, ${coverIds.length} item(s)`);
-
-  try {
-    let cursor = 0;
-    while (cursor < coverIds.length) {
-      if (recacheAbortRequested) {
-        logImageCache(`recache: aborted at ${cursor}/${coverIds.length}`);
-        return;
-      }
-      // Bail mid-pass if connectivity drops — leaves status='running'
-      // and the next online-trigger picks it up from a fresh state.
-      const ck = connectivityStore.getState();
-      if (!ck.isServerReachable && !ck.isInternetReachable) {
-        logImageCache(`recache: connectivity dropped at ${cursor}/${coverIds.length}`);
-        return;
-      }
-
-      const batch = coverIds.slice(cursor, cursor + RECACHE_CONCURRENCY);
-      cursor += batch.length;
-
-      await Promise.all(
-        batch.map(async (id) => {
-          try {
-            await refreshCachedImage(id, `recache-${reason}`);
-            coverArtRecacheStore.getState().recordProcessed();
-          } catch (e) {
-            logImageCache(
-              `recache: per-item fail id=${id} err=${e instanceof Error ? e.message : String(e)}`,
-            );
-            coverArtRecacheStore.getState().recordFailed();
-          }
-        }),
-      );
-
-      if (cursor < coverIds.length) {
-        await new Promise((r) => setTimeout(r, RECACHE_BATCH_GAP_MS));
-      }
-    }
-
-    coverArtRecacheStore.getState().complete();
-    logImageCache('recache: complete');
-  } finally {
-    recacheActive = false;
-  }
-}
-
-/**
- * Stop the in-flight recache pass at the next batch boundary. The
- * current state is preserved (status stays `running` until the next
- * trigger). Mostly for AppState 'background' transitions.
- */
-export function pauseCoverArtRecache(): void {
-  if (recacheActive) recacheAbortRequested = true;
-}
-
 /**
  * Snapshot every cached item row's `(type, coverArtId)` for the
- * recache pass. Broken out so it can be mocked in unit tests without
- * dragging in the entire `musicCacheTables` import surface.
+ * persistent image-download queue's `refresh-downloads` scope. Broken
+ * out so it can be mocked in unit tests without dragging in the entire
+ * `musicCacheTables` import surface.
  */
 function hydrateCachedItemsForRecache(): {
   items: Array<{ type: string; coverArtId: string | null }>;
@@ -1782,6 +1639,32 @@ export function getImageQueueCycleProgress(): {
   return { processed, total: cycleTotal, failed: errored };
 }
 
+/* ----- Queue-change pub/sub for store consumers ----- */
+
+/**
+ * Listener pattern that lets `imageDownloadQueueStore` react to queue
+ * mutations without depending on the store directly (which would create
+ * a circular import — the store imports getter helpers from this file).
+ *
+ * Mutating queue ops call `notifyImageQueueChange()`. Subscribers do
+ * their own derived-state refresh; we don't pass payloads.
+ */
+type ImageQueueChangeListener = () => void;
+const imageQueueListeners = new Set<ImageQueueChangeListener>();
+
+export function subscribeImageQueueChanges(
+  fn: ImageQueueChangeListener,
+): () => void {
+  imageQueueListeners.add(fn);
+  return () => { imageQueueListeners.delete(fn); };
+}
+
+function notifyImageQueueChange(): void {
+  for (const fn of imageQueueListeners) {
+    try { fn(); } catch { /* listener errors must not break the worker */ }
+  }
+}
+
 /* ----- Worker ----- */
 
 /**
@@ -1868,6 +1751,7 @@ async function processOneImage(row: ImageDownloadQueueRow): Promise<void> {
     markImageError(row.coverArtId, 'Failed after retry');
     logImageCache(`image-queue: persisted error for id=${row.coverArtId}`);
   }
+  notifyImageQueueChange();
 }
 
 function maybeCompleteCycle(): void {
@@ -1936,6 +1820,7 @@ export async function recoverStalledImageDownloads(): Promise<void> {
   const reset = resetStalledImageRows();
   if (reset > 0) {
     logImageCache(`image-queue: recovered ${reset} stalled row(s) to queued`);
+    notifyImageQueueChange();
   }
 }
 
@@ -1950,6 +1835,7 @@ export function pauseImageQueue(): void {
   if (meta.isPaused) return;
   writeImageQueueMeta({ ...meta, isPaused: true });
   logImageCache('image-queue: paused');
+  notifyImageQueueChange();
 }
 
 export function resumeImageQueue(): void {
@@ -1957,6 +1843,7 @@ export function resumeImageQueue(): void {
   if (!meta.isPaused) return;
   writeImageQueueMeta({ ...meta, isPaused: false });
   logImageCache('image-queue: resumed');
+  notifyImageQueueChange();
   void processImageQueue();
 }
 
@@ -1976,6 +1863,7 @@ export function cancelImageRefreshCycle(): void {
   writeImageQueueMeta({ cycleId: null, cycleScope: null, cycleTotal: 0, isPaused: false });
   flushAggregateRecalc();
   logImageCache(`image-queue: cancelled cycle ${meta.cycleId}, removed ${removed} row(s)`);
+  notifyImageQueueChange();
 }
 
 /**
@@ -1990,7 +1878,10 @@ export function retryFailedImages(): void {
   }
   const reset = resetErrorRowsForCycle(meta.cycleId);
   logImageCache(`image-queue: retryFailed reset ${reset} row(s)`);
-  if (reset > 0) void processImageQueue();
+  if (reset > 0) {
+    notifyImageQueueChange();
+    void processImageQueue();
+  }
 }
 
 /* ----- Cycle starters ----- */
@@ -2062,6 +1953,7 @@ export async function enqueueImageRefreshCycle(
     isPaused: false,
   });
   logImageCache(`image-queue: started cycle ${cycleId} scope=${scope} ids=${inserted}`);
+  notifyImageQueueChange();
   void processImageQueue();
   return cycleId;
 }

@@ -52,17 +52,17 @@ jest.mock('../PersistenceDegradedBanner', () => ({
   },
 }));
 
-jest.mock('../CoverArtRecacheBanner', () => ({
-  CoverArtRecacheBanner: () => {
+jest.mock('../ImageCacheBanner', () => ({
+  ImageCacheBanner: () => {
     const React = require('react');
     const { Text } = require('react-native');
-    return React.createElement(Text, { testID: 'banner-cover-art-recache' }, 'cover-art-recache');
+    return React.createElement(Text, { testID: 'banner-image-cache' }, 'image-cache');
   },
 }));
 
 import { BannerStack } from '../BannerStack';
 import { connectivityStore } from '../../store/connectivityStore';
-import { coverArtRecacheStore } from '../../store/coverArtRecacheStore';
+import { imageDownloadQueueStore } from '../../store/imageDownloadQueueStore';
 import { offlineModeStore } from '../../store/offlineModeStore';
 import { storageLimitStore } from '../../store/storageLimitStore';
 import { syncStatusStore } from '../../store/syncStatusStore';
@@ -73,7 +73,7 @@ function resetAll() {
   offlineModeStore.setState({ offlineMode: false } as any);
   storageLimitStore.setState({ isStorageFull: false } as any);
   syncStatusStore.setState({ detailSyncPhase: 'idle' });
-  coverArtRecacheStore.setState({ status: 'idle', total: 0, processed: 0 } as any);
+  imageDownloadQueueStore.setState({ cycleId: null, cycleTotal: 0, cycleProcessed: 0 } as any);
 }
 
 beforeEach(resetAll);
@@ -177,23 +177,29 @@ describe('BannerStack — priority selection', () => {
     expect(queryByTestId('banner-persistence-degraded')).toBeNull();
   });
 
-  it('shows cover-art recache banner when running and no higher-priority banner is active', () => {
-    coverArtRecacheStore.setState({ status: 'running', total: 100, processed: 25 } as any);
+  it('shows image-cache banner when an image-queue cycle is active and no higher-priority banner is active', () => {
+    imageDownloadQueueStore.setState({ cycleId: 'cyc-1', cycleTotal: 100, cycleProcessed: 25 } as any);
     const { queryByTestId } = render(<BannerStack />);
-    expect(queryByTestId('banner-cover-art-recache')).not.toBeNull();
+    expect(queryByTestId('banner-image-cache')).not.toBeNull();
   });
 
-  it('does not show cover-art recache banner when total is 0', () => {
-    coverArtRecacheStore.setState({ status: 'running', total: 0, processed: 0 } as any);
+  it('does not show image-cache banner when cycle total is 0', () => {
+    imageDownloadQueueStore.setState({ cycleId: 'cyc-1', cycleTotal: 0, cycleProcessed: 0 } as any);
     const { queryByTestId } = render(<BannerStack />);
-    expect(queryByTestId('banner-cover-art-recache')).toBeNull();
+    expect(queryByTestId('banner-image-cache')).toBeNull();
   });
 
-  it('library-sync progress suppresses cover-art recache (lower priority)', () => {
+  it('does not show image-cache banner when no cycle is active', () => {
+    imageDownloadQueueStore.setState({ cycleId: null, cycleTotal: 0, cycleProcessed: 0 } as any);
+    const { queryByTestId } = render(<BannerStack />);
+    expect(queryByTestId('banner-image-cache')).toBeNull();
+  });
+
+  it('library-sync progress suppresses image-cache banner (lower priority)', () => {
     syncStatusStore.setState({ detailSyncPhase: 'syncing' });
-    coverArtRecacheStore.setState({ status: 'running', total: 100, processed: 25 } as any);
+    imageDownloadQueueStore.setState({ cycleId: 'cyc-1', cycleTotal: 100, cycleProcessed: 25 } as any);
     const { queryByTestId } = render(<BannerStack />);
     expect(queryByTestId('banner-library-sync')).not.toBeNull();
-    expect(queryByTestId('banner-cover-art-recache')).toBeNull();
+    expect(queryByTestId('banner-image-cache')).toBeNull();
   });
 });

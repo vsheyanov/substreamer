@@ -16,7 +16,6 @@ import { Platform } from 'react-native';
 import { defaultCollator } from '../utils/intl';
 
 import { migrateV3BackupMetas, migrateV4BackupMetas } from './backupService';
-import { coverArtRecacheStore } from '../store/coverArtRecacheStore';
 import { deviceIdentityStore } from '../store/deviceIdentityStore';
 import { getAllSongAlbumIds } from '../store/persistence/detailTables';
 import {
@@ -1428,13 +1427,10 @@ async function reconcileImageCacheCoverArtIds(
       `${dirsSkipped} skipped, ${dirsUnknown} unknown-error.`,
   );
 
-  // Reset the post-migration recache flag so the next online connection
-  // triggers a server refresh under the canonical IDs. Idempotent.
-  try {
-    coverArtRecacheStore.getState().reset();
-  } catch (e) {
-    log(`[m22] could not reset coverArtRecacheStore: ${e instanceof Error ? e.message : String(e)}`);
-  }
+  // The post-Migration-22 recache used to be auto-triggered via the
+  // (now-removed) coverArtRecacheStore. Under the persistent image queue
+  // model, the user re-runs the refresh from Settings → Storage at their
+  // convenience. No flag to reset.
 }
 
 /* ------------------------------------------------------------------ */

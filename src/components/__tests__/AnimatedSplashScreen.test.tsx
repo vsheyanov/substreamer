@@ -13,6 +13,13 @@ jest.mock('expo-sqlite', () => ({
 jest.mock('../../services/imageCacheService', () => ({
   cacheAllSizes: jest.fn(),
   cacheEntityCoverArt: jest.fn(),
+  // Phase-3 additions consumed transitively by imageDownloadQueueStore.
+  subscribeImageQueueChanges: jest.fn(() => () => {}),
+  getImageQueueCycle: jest.fn(() => ({ cycleId: null, cycleScope: null, cycleTotal: 0 })),
+  getImageQueueCycleProgress: jest.fn(() => ({ processed: 0, total: 0, failed: 0 })),
+  isImageQueuePaused: jest.fn(() => false),
+  processImageQueue: jest.fn(async () => {}),
+  recoverStalledImageDownloads: jest.fn(async () => {}),
 }));
 
 /* ------------------------------------------------------------------ */
