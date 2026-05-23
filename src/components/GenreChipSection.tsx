@@ -1,6 +1,6 @@
 import Ionicons from "@react-native-vector-icons/ionicons/static";
 import { useRouter } from 'expo-router';
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ActivityIndicator,
@@ -13,9 +13,7 @@ import {
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
-  withDelay,
   withSpring,
-  withTiming,
 } from 'react-native-reanimated';
 
 import { type ThemeColors } from '../constants/theme';
@@ -69,23 +67,19 @@ async function playGenre(genre: string): Promise<boolean> {
 
 interface GenreChipProps {
   genre: string;
-  index: number;
   colors: ThemeColors;
 }
 
-const GenreChip = memo(function GenreChip({ genre, index, colors }: GenreChipProps) {
+const GenreChip = memo(function GenreChip({ genre, colors }: GenreChipProps) {
   const [loading, setLoading] = useState(false);
   const color = useMemo(() => genreColor(genre), [genre]);
 
-  // Staggered entrance
-  const opacity = useSharedValue(0);
-  const translateY = useSharedValue(10);
-  useEffect(() => {
-    opacity.value = withDelay(index * 60, withTiming(1, { duration: 350 }));
-    translateY.value = withDelay(index * 60, withTiming(0, { duration: 350 }));
-  }, [index, opacity, translateY]);
-
-  // Press scale
+  // No useEffect-driven entrance animation — see the explanatory comment
+  // in `MixItUpChip` below. Starting opacity at 0 and fading in via
+  // useEffect leaves the chip invisible whenever the effect misses
+  // (double-mount, strict-mode quirks, worklet timing). The chip simply
+  // appears at full opacity; the stagger isn't worth a real bug where
+  // chips disappear and require an app kill+restart to recover.
   const scale = useSharedValue(1);
   const handlePressIn = useCallback(() => {
     scale.value = withSpring(0.96, { damping: 15, stiffness: 150 });
@@ -95,8 +89,7 @@ const GenreChip = memo(function GenreChip({ genre, index, colors }: GenreChipPro
   }, [scale]);
 
   const animatedStyle = useAnimatedStyle(() => ({
-    opacity: opacity.value,
-    transform: [{ translateY: translateY.value }, { scale: scale.value }],
+    transform: [{ scale: scale.value }],
   }));
 
   const handlePress = useCallback(async () => {
@@ -301,11 +294,10 @@ export const GenreChipSection = memo(function GenreChipSection({
         contentContainerStyle={styles.chipRow}
       >
         <MixItUpChip colors={colors} />
-        {genres.map((genre, index) => (
+        {genres.map((genre) => (
           <GenreChip
             key={genre}
             genre={genre}
-            index={index + 1}
             colors={colors}
           />
         ))}
