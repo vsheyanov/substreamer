@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
-import { HeaderHeightContext } from '@react-navigation/elements';
+import { HeaderHeightContext } from "expo-router/react-navigation";
 import { useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,

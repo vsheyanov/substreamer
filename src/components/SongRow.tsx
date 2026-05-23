@@ -19,6 +19,7 @@ import { offlineModeStore } from '../store/offlineModeStore';
 import { playerStore } from '../store/playerStore';
 import { formatTrackDuration } from '../utils/formatters';
 
+import { absoluteFill } from '../utils/styles';
 const COVER_SIZE = 300;
 
 export const SongRow = memo(function SongRow({ song, onPress }: { song: Child; onPress?: () => void }) {
@@ -164,7 +165,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   activeOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...absoluteFill,
     backgroundColor: 'rgba(0,0,0,0.45)',
     alignItems: 'center',
     justifyContent: 'center',

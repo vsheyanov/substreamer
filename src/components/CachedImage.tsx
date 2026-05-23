@@ -54,6 +54,7 @@ import { STARRED_COVER_ART_ID } from '../services/musicCacheService';
 import { getCoverArtUrl, VARIOUS_ARTISTS_COVER_ART_ID } from '../services/subsonicService';
 import { offlineModeStore } from '../store/offlineModeStore';
 
+import { absoluteFill } from '../utils/styles';
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */
 /* ------------------------------------------------------------------ */
@@ -421,7 +422,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   placeholder: {
-    ...StyleSheet.absoluteFillObject,
+    ...absoluteFill,
     alignItems: 'center',
     justifyContent: 'center',
   },

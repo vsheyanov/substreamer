@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { File, Paths } from 'expo-file-system';
 import { shareAsync } from 'expo-sharing';
-import { HeaderHeightContext } from '@react-navigation/elements';
+import { HeaderHeightContext } from "expo-router/react-navigation";
 import { useCallback, useContext, useEffect, useState } from 'react';
 import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { useTranslation } from 'react-i18next';

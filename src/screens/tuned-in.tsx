@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import { HeaderHeightContext } from '@react-navigation/elements';
+import { HeaderHeightContext } from "expo-router/react-navigation";
 import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -53,6 +53,7 @@ import { VIZ_PALETTE } from '../constants/vizColors';
 import { selectionAsync } from '../utils/haptics';
 import { minDelay } from '../utils/stringHelpers';
 
+import { absoluteFill } from '../utils/styles';
 const MAX_SELECTED_GENRES = 3;
 const MAX_BUILDER_GENRES = 30;
 const JUMP_BACK_IN_SIZE = 150;
@@ -1199,7 +1200,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   jumpLoadingOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...absoluteFill,
     top: 0,
     width: JUMP_BACK_IN_IMAGE,
     height: JUMP_BACK_IN_IMAGE,

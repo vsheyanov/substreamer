@@ -1,4 +1,4 @@
-import { StyleSheet, View } from 'react-native';
+import { StyleSheet, View, type ColorValue } from 'react-native';
 
 /**
  * Bar height proportions – creates a fun, bouncy waveform shape.
@@ -14,8 +14,9 @@ const BAR_COUNT = BAR_HEIGHTS.length;
 type Props = {
   /** Overall size (dp) – the tallest bar will be this height. */
   size?: number;
-  /** Bar colour. */
-  color?: string;
+  /** Bar colour. Accepts any RN `ColorValue` so the tab-icon callback's
+   *  `OpaqueColorValue` (SDK 56 / RN 0.85 typing tightening) flows in. */
+  color?: ColorValue;
 };
 
 export default function WaveformLogo({ size = 130, color = '#FFFFFF' }: Props) {

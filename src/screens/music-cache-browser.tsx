@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { FlashList } from '@shopify/flash-list';
 import { useNavigation } from 'expo-router';
-import { HeaderHeightContext } from '@react-navigation/elements';
+import { HeaderHeightContext } from "expo-router/react-navigation";
 import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -298,7 +298,7 @@ const CacheRow = memo(function CacheRow({
             ) : isPartial && fullAlbumSongs ? (
               // Partial album with the full server track list available:
               // render each server track, marking downloaded vs missing.
-              (() => {
+              ((() => {
                 const downloadedById = new Map(tracks.map((t) => [t.id, t]));
                 return (
                   <>
@@ -337,7 +337,7 @@ const CacheRow = memo(function CacheRow({
                     )}
                   </>
                 );
-              })()
+              })())
             ) : isPartial && fetchingFullList ? (
               <ActivityIndicator
                 size="small"
@@ -347,14 +347,14 @@ const CacheRow = memo(function CacheRow({
             ) : (
               // Complete item, or partial without album detail available
               // (offline / fetch failed): show downloaded tracks only.
-              tracks.map((track) => (
+              (tracks.map((track) => (
                 <TrackFileRow
                   key={track.id}
                   track={track}
                   itemId={item.itemId}
                   colors={colors}
                 />
-              ))
+              )))
             )}
           </View>
         )}

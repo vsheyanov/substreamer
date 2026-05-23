@@ -37,6 +37,7 @@ const PRESS_OPACITY = 0.7;
 
 import { useTheme } from '../hooks/useTheme';
 
+import { absoluteFill } from '../utils/styles';
 /* ------------------------------------------------------------------ */
 /*  Module-level: active row tracking                                  */
 /* ------------------------------------------------------------------ */
@@ -536,7 +537,7 @@ const ActionButton = memo(function ActionButton({
 
 const styles = StyleSheet.create({
   swipeBg: {
-    ...StyleSheet.absoluteFillObject,
+    ...absoluteFill,
   },
   actionPanel: {
     flexDirection: 'row',

@@ -81,6 +81,7 @@ import { playerStore } from '../store/playerStore';
 import { mixHexColors } from '../utils/colors';
 
 
+import { absoluteFill } from '../utils/styles';
 const HERO_PADDING = 32;
 const HERO_COVER_SIZE = 600;
 const HEADER_BAR_HEIGHT = Platform.OS === 'ios' ? 44 : 56;
@@ -380,15 +381,15 @@ export function PlayerView() {
       )}
       <View style={[styles.container, { backgroundColor: colors.background }]}>
         {/* Gradient background */}
-        <View style={[StyleSheet.absoluteFillObject, { backgroundColor: colors.background }]} />
+        <View style={[absoluteFill, { backgroundColor: colors.background }]} />
         <Animated.View
-          style={[StyleSheet.absoluteFillObject, gradientAnimatedStyle]}
+          style={[absoluteFill, gradientAnimatedStyle]}
           pointerEvents="none"
         >
           <LinearGradient
             colors={gradientColors}
             locations={gradientLocations}
-            style={StyleSheet.absoluteFillObject}
+            style={absoluteFill}
           />
         </Animated.View>
 
@@ -905,7 +906,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   tabPanel: {
-    ...StyleSheet.absoluteFillObject,
+    ...absoluteFill,
   },
   hiddenTab: {
     display: 'none',
@@ -1087,7 +1088,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   shuffleOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...absoluteFill,
     backgroundColor: 'rgba(0,0,0,0.5)',
     alignItems: 'center',
     justifyContent: 'center',

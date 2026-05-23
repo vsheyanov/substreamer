@@ -17,6 +17,7 @@ import { formatTrackDuration } from '../utils/formatters';
 
 import type { ThemeColors } from '../constants/theme';
 
+import { absoluteFill } from '../utils/styles';
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */
 /* ------------------------------------------------------------------ */
@@ -204,7 +205,7 @@ const styles = StyleSheet.create({
     height: COVER_SIZE,
   },
   activeOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...absoluteFill,
     backgroundColor: 'rgba(0,0,0,0.45)',
     alignItems: 'center',
     justifyContent: 'center',

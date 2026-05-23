@@ -8,6 +8,7 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { useTheme } from '../hooks/useTheme';
+import { absoluteFill } from '../utils/styles';
 import {
   processingOverlayStore,
   type OverlayStatus,
@@ -100,7 +101,7 @@ function getIcon(status: OverlayStatus) {
 
 const styles = StyleSheet.create({
   backdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...absoluteFill,
     zIndex: 9999,
     justifyContent: 'center',
     alignItems: 'center',

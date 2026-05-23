@@ -22,6 +22,7 @@ import {
 } from '../services/subsonicService';
 import { searchStore } from '../store/searchStore';
 
+import { absoluteFill } from '../utils/styles';
 const COVER_SIZE = 150;
 const TOTAL_BUDGET = 9;
 
@@ -331,7 +332,7 @@ const styles = StyleSheet.create({
     elevation: 100,
   },
   backdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...absoluteFill,
     backgroundColor: 'rgba(0,0,0,0.35)',
   },
   card: {

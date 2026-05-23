@@ -6,6 +6,7 @@
  * Import this file early — either in a jest setup file or at the top
  * of individual test files that render i18n-aware components.
  */
+
 import i18next from 'i18next';
 import { initReactI18next } from 'react-i18next';
 

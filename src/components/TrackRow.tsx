@@ -30,6 +30,7 @@ import { formatTrackDuration } from '../utils/formatters';
 import type { ThemeColors } from '../constants/theme';
 import type { Child } from '../services/subsonicService';
 
+import { absoluteFill } from '../utils/styles';
 const COVER_SIZE = 300;
 
 export interface TrackRowProps {
@@ -254,7 +255,7 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(128,128,128,0.12)',
   },
   activeOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...absoluteFill,
     backgroundColor: 'rgba(0,0,0,0.45)',
     alignItems: 'center',
     justifyContent: 'center',

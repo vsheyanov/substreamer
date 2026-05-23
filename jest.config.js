@@ -1,3 +1,12 @@
+// SDK 56: opt out of `expo/fetch` becoming `globalThis.fetch` for the
+// Jest workers. The lazy getter in expo/winter/installGlobal.ts loads
+// expo-modules-core and the RN DevMenu native module, which have no
+// native bridge under jest → invariant violation on any suite that
+// touches react-native imports. Setting the env var here (jest.config.js
+// runs in the parent Jest process before workers spawn) ensures it
+// propagates to every worker.
+process.env.EXPO_PUBLIC_USE_RN_FETCH = '1';
+
 module.exports = {
   projects: [
     {

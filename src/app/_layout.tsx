@@ -1,4 +1,4 @@
-import { ThemeProvider, DarkTheme, DefaultTheme } from '@react-navigation/native';
+import { ThemeProvider, DarkTheme, DefaultTheme } from "expo-router/react-navigation";
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';

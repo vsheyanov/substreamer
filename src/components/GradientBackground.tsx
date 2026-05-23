@@ -1,4 +1,4 @@
-import { HeaderHeightContext } from '@react-navigation/elements';
+import { HeaderHeightContext } from "expo-router/react-navigation";
 import { LinearGradient } from 'expo-linear-gradient';
 import { memo, useContext, useMemo } from 'react';
 import { StyleSheet, View, type ViewStyle } from 'react-native';

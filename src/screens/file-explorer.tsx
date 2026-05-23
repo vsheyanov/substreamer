@@ -1,6 +1,6 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Directory, File, Paths } from 'expo-file-system';
-import { HeaderHeightContext } from '@react-navigation/elements';
+import { HeaderHeightContext } from "expo-router/react-navigation";
 import { useRouter } from 'expo-router';
 import { useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import {

@@ -78,6 +78,7 @@ import { offlineModeStore } from '../store/offlineModeStore';
 import { playerStore } from '../store/playerStore';
 import { tabletLayoutStore } from '../store/tabletLayoutStore';
 
+import { absoluteFill } from '../utils/styles';
 const HERO_COVER_SIZE = 600;
 const CONTENT_PADDING = 40;
 const COLUMN_GAP = 32;
@@ -335,7 +336,7 @@ export function ExpandedPlayerView({
       <View style={[styles.container, { backgroundColor: colors.background }]}>
         {/* Gradient background — emanates from the left (art side) */}
         <Animated.View
-          style={[StyleSheet.absoluteFillObject, gradientAnimatedStyle]}
+          style={[absoluteFill, gradientAnimatedStyle]}
           pointerEvents="none"
         >
           <LinearGradient
@@ -343,7 +344,7 @@ export function ExpandedPlayerView({
             locations={gradientLocations}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 0.6 }}
-            style={StyleSheet.absoluteFillObject}
+            style={absoluteFill}
           />
         </Animated.View>
 
@@ -940,7 +941,7 @@ const styles = StyleSheet.create({
 
   /* --- Shuffle overlay --- */
   shuffleOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...absoluteFill,
     backgroundColor: 'rgba(0,0,0,0.5)',
     alignItems: 'center',
     justifyContent: 'center',

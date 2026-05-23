@@ -51,6 +51,7 @@ import { moreOptionsStore } from '../store/moreOptionsStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { playbackSettingsStore, type ArtistPlayMode } from '../store/playbackSettingsStore';
 
+import { absoluteFill } from '../utils/styles';
 import {
   type AlbumID3,
   type ArtistInfo2,
@@ -485,7 +486,7 @@ export function ArtistDetailScreen() {
   }
 
   const gradientFillStyle = [
-    StyleSheet.absoluteFillObject,
+    absoluteFill,
     { top: -insets.top, left: 0, right: 0, bottom: 0 },
   ];
 
@@ -516,7 +517,7 @@ export function ArtistDetailScreen() {
           <LinearGradient
             colors={gradientColors}
             locations={gradientLocations}
-            style={StyleSheet.absoluteFillObject}
+            style={absoluteFill}
           />
         </Animated.View>
         {themeGradientColors && (

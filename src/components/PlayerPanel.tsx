@@ -67,6 +67,7 @@ import { offlineModeStore } from '../store/offlineModeStore';
 import { playerStore } from '../store/playerStore';
 import { tabletLayoutStore } from '../store/tabletLayoutStore';
 
+import { absoluteFill } from '../utils/styles';
 const COVER_SIZE = 300;
 const PADDING = 16;
 
@@ -679,7 +680,7 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   shuffleOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...absoluteFill,
     backgroundColor: 'rgba(0,0,0,0.5)',
     alignItems: 'center',
     justifyContent: 'center',

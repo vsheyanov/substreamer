@@ -1,5 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
-import type { BottomTabHeaderProps } from '@react-navigation/bottom-tabs';
+// SDK 56 codemod gap: `expo-router/js-tabs` (the public entry) doesn't
+// re-export BottomTabHeaderProps. Use the deeper path until upstream
+// surfaces it at js-tabs.
+import type { BottomTabHeaderProps } from "expo-router/build/react-navigation/bottom-tabs";
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useCallback, useEffect, useMemo, useRef } from 'react';

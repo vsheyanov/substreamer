@@ -1,5 +1,8 @@
 import { Ionicons } from '@expo/vector-icons';
-import { BottomTabBar } from '@react-navigation/bottom-tabs';
+// SDK 56 codemod gap: `expo-router/js-tabs` (the public entry) doesn't
+// re-export BottomTabBar as a named export. Use the deeper path until
+// upstream surfaces it at js-tabs.
+import { BottomTabBar } from "expo-router/build/react-navigation/bottom-tabs";
 import { Tabs } from 'expo-router';
 import { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';

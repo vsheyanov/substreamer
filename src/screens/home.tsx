@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { useIsFocused } from '@react-navigation/native';
+import { useIsFocused } from "expo-router/react-navigation";
 import { FlashList } from '@shopify/flash-list';
 import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
@@ -46,6 +46,7 @@ import { offlineModeStore } from '../store/offlineModeStore';
 import { playlistLibraryStore } from '../store/playlistLibraryStore';
 import { searchStore } from '../store/searchStore';
 
+import { absoluteFill } from '../utils/styles';
 const CARD_WIDTH = 150;
 const CARD_GAP = 12;
 
@@ -638,7 +639,7 @@ const styles = StyleSheet.create({
     width: '60%' as const,
   },
   emptyOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...absoluteFill,
     justifyContent: 'center' as const,
     alignItems: 'center' as const,
     gap: 8,

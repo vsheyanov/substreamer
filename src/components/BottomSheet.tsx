@@ -19,6 +19,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useTheme } from '../hooks/useTheme';
 
+import { absoluteFill } from '../utils/styles';
 const BACKDROP_OPACITY = 0.4;
 const DISMISS_DISTANCE_RATIO = 0.35;
 const DISMISS_VELOCITY = 800;
@@ -235,7 +236,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   backdropFill: {
-    ...StyleSheet.absoluteFillObject,
+    ...absoluteFill,
     zIndex: 0,
   },
   backdropPressable: {

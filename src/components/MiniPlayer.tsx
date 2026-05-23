@@ -23,6 +23,7 @@ import { skipToNext, togglePlayPause } from '../services/playerService';
 import { playbackSettingsStore } from '../store/playbackSettingsStore';
 import { playerStore } from '../store/playerStore';
 
+import { absoluteFill } from '../utils/styles';
 const MINI_PLAYER_HEIGHT = 56;
 /** Matches the placeholder cover art background (rgb 150,150,150). */
 const PLACEHOLDER_BG = '#969696';
@@ -110,13 +111,13 @@ export function MiniPlayer() {
       </View>
 
       {/* Gradient overlay */}
-      <Animated.View style={[StyleSheet.absoluteFillObject, gradientAnimatedStyle]} pointerEvents="none">
+      <Animated.View style={[absoluteFill, gradientAnimatedStyle]} pointerEvents="none">
         <LinearGradient
           colors={gradientColors}
           locations={gradientLocations}
           start={{ x: 0.5, y: 0 }}
           end={{ x: 0.5, y: 1 }}
-          style={StyleSheet.absoluteFillObject}
+          style={absoluteFill}
         />
       </Animated.View>
 

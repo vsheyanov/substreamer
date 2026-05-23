@@ -24,6 +24,7 @@ import {
 } from '../store/playbackToastStore';
 import { BANNER_HEIGHT } from './DownloadBanner';
 
+import { absoluteFill } from '../utils/styles';
 const CAPSULE_HEIGHT = 44;
 const CAPSULE_BORDER_RADIUS = CAPSULE_HEIGHT / 2;
 
@@ -225,7 +226,7 @@ function getIcon(status: PlaybackToastStatus) {
 
 const styles = StyleSheet.create({
   wrapper: {
-    ...StyleSheet.absoluteFillObject,
+    ...absoluteFill,
     top: undefined,
     justifyContent: 'center',
     alignItems: 'center',

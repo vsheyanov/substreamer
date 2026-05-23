@@ -59,6 +59,7 @@ import { formatCompactDuration } from '../utils/formatters';
 
 import { type Child, type PlaylistWithSongs } from '../services/subsonicService';
 
+import { absoluteFill } from '../utils/styles';
 const HERO_PADDING = 24;
 const HERO_COVER_SIZE = 600;
 const HEADER_BAR_HEIGHT = 44;
@@ -507,7 +508,7 @@ export function PlaylistDetailScreen() {
   }
 
   const gradientFillStyle = [
-    StyleSheet.absoluteFillObject,
+    absoluteFill,
     { top: -insets.top, left: 0, right: 0, bottom: 0 },
   ];
 
@@ -565,7 +566,7 @@ export function PlaylistDetailScreen() {
         <LinearGradient
           colors={gradientColors}
           locations={gradientLocations}
-          style={StyleSheet.absoluteFillObject}
+          style={absoluteFill}
         />
       </Animated.View>
         {themeGradientColors && (

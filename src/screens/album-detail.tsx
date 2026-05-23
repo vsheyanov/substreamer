@@ -50,6 +50,7 @@ import { offlineModeStore } from '../store/offlineModeStore';
 
 import type { AlbumWithSongsID3, Child } from '../services/subsonicService';
 
+import { absoluteFill } from '../utils/styles';
 const HERO_PADDING = 24;
 const HERO_COVER_SIZE = 600;
 const HEADER_BAR_HEIGHT = 44;
@@ -370,7 +371,7 @@ export function AlbumDetailScreen() {
   }
 
   const gradientFillStyle = [
-    StyleSheet.absoluteFillObject,
+    absoluteFill,
     { top: -insets.top, left: 0, right: 0, bottom: 0 },
   ];
 
@@ -410,7 +411,7 @@ export function AlbumDetailScreen() {
           <LinearGradient
             colors={gradientColors}
             locations={gradientLocations}
-            style={StyleSheet.absoluteFillObject}
+            style={absoluteFill}
           />
         </Animated.View>
         {themeGradientColors && (

@@ -1,4 +1,5 @@
 import { memo, useCallback } from 'react';
+import { absoluteFill } from '../utils/styles';
 import {
   Pressable,
   StyleSheet,
@@ -152,6 +153,6 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   textOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...absoluteFill,
   },
 });

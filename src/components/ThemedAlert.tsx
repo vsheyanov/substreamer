@@ -8,6 +8,7 @@ import Animated, {
 
 import { type ThemeColors } from '../constants/theme';
 
+import { absoluteFill } from '../utils/styles';
 const FADE_MS = 200;
 
 interface ThemedAlertButton {
@@ -149,7 +150,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 40,
   },
   backdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...absoluteFill,
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
   },
   card: {

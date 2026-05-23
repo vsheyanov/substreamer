@@ -1,5 +1,5 @@
 import { Ionicons } from '@expo/vector-icons';
-import { HeaderHeightContext } from '@react-navigation/elements';
+import { HeaderHeightContext } from "expo-router/react-navigation";
 import { useNavigation } from 'expo-router';
 import { memo, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import {
@@ -37,6 +37,7 @@ import {
 import { computeQueueItemProgress } from '../store/persistence/cachedItemHelpers';
 import { formatSpeed } from '../utils/formatters';
 
+import { absoluteFill } from '../utils/styles';
 const ANIMATE_MS = 400;
 const SPEED_POLL_MS = 1000;
 
@@ -509,7 +510,7 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   spinnerOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...absoluteFill,
     backgroundColor: 'rgba(0, 0, 0, 0.4)',
     alignItems: 'center',
     justifyContent: 'center',
