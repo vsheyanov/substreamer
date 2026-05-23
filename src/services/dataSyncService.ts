@@ -283,6 +283,32 @@ async function startupOrResumeFlow(): Promise<void> {
   });
 }
 
+let _offlineSyncPhaseUnsub: (() => void) | null = null;
+
+/**
+ * Wire the runtime offline-mode → sync-phase reaction. Idempotent. Moved
+ * out of module scope in Phase 5 so test imports of `dataSyncService` don't
+ * register a sticky subscription that bleeds across test files. Called once
+ * from `deferredDataSyncInit` per session (re-registers automatically on
+ * logout → login cycles via the existing unsub stored in module state).
+ */
+function ensureOfflineSyncPhaseSubscription(): void {
+  if (_offlineSyncPhaseUnsub) return;
+  _offlineSyncPhaseUnsub = offlineModeStore.subscribe((state, prev) => {
+    if (state.offlineMode === prev.offlineMode) return;
+    const phase = syncStatusStore.getState().detailSyncPhase;
+    if (state.offlineMode) {
+      if (phase === 'idle' && isLibrarySyncPending()) {
+        syncStatusStore.getState().setDetailSyncPhase('paused-offline');
+      }
+    } else {
+      if (phase === 'paused-offline') {
+        fireAndForget(onOnlineResume(), 'sync.offlineToggle.resume');
+      }
+    }
+  });
+}
+
 /**
  * Called from `_layout.tsx`'s deferred-init chain, alongside
  * `deferredImageCacheInit` / `deferredMusicCacheInit`. Re-enters the walk if
@@ -290,6 +316,8 @@ async function startupOrResumeFlow(): Promise<void> {
  * also needs to fire on AppState transitions back to 'active'.
  */
 export async function deferredDataSyncInit(): Promise<void> {
+  // Register the runtime offline-mode listener at boot time (idempotent).
+  ensureOfflineSyncPhaseSubscription();
   if (offlineModeStore.getState().offlineMode) return;
   await recoverStalledSync();
 }
@@ -838,25 +866,10 @@ albumListsStore.subscribe((state, prev) => {
   }
 });
 
-// React to offline-mode toggles at runtime so the sync banner tracks
-// reality without relying on the user to relaunch the app. An in-flight
-// walk is already handled by the per-walk subscription inside doWalk()
-// — this module-scope subscriber fills the gap when phase is 'idle'
-// (user flips offline on with a stale library) or 'paused-offline'
-// (user flips offline off and we need to resume).
-offlineModeStore.subscribe((state, prev) => {
-  if (state.offlineMode === prev.offlineMode) return;
-  const phase = syncStatusStore.getState().detailSyncPhase;
-  if (state.offlineMode) {
-    if (phase === 'idle' && isLibrarySyncPending()) {
-      syncStatusStore.getState().setDetailSyncPhase('paused-offline');
-    }
-  } else {
-    if (phase === 'paused-offline') {
-      fireAndForget(onOnlineResume(), 'sync.offlineToggle.resume');
-    }
-  }
-});
+// NOTE: The runtime offline-mode → sync-phase reaction lived here at module
+// scope until Phase 5 of the audit remediation. It now registers inside
+// `deferredDataSyncInit` via `ensureOfflineSyncPhaseSubscription()` so test
+// imports of this module don't fire the side effect.
 
 /* ------------------------------------------------------------------ */
 /*  Internals exposed for tests                                        */

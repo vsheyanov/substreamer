@@ -80,7 +80,7 @@ import { musicCacheStore } from '../store/musicCacheStore';
 import { authStore } from '../store/authStore';
 import { autoOfflineStore } from '../store/autoOfflineStore';
 import { certPromptStore } from '../store/certPromptStore';
-import { offlineModeStore } from '../store/offlineModeStore';
+import { initializeOfflineFilterBarSync, offlineModeStore } from '../store/offlineModeStore';
 import { playerStore } from '../store/playerStore';
 import { kvStorage } from '../store/persistence';
 import { tabletLayoutStore } from '../store/tabletLayoutStore';
@@ -206,6 +206,11 @@ async function runDeferredStartup(getCancelled: () => boolean): Promise<void> {
       );
     }
   };
+
+  // Explicit boot-owned subscription setup (moved here from module scope
+  // in Phase 5 so test imports don't trigger the cross-store side effect).
+  await stage('initializeOfflineFilterBarSync', () => { initializeOfflineFilterBarSync(); });
+  if (getCancelled()) return;
 
   await stage('deferredImageCacheInit', () => deferredImageCacheInit());
   if (getCancelled()) return;

@@ -1,9 +1,8 @@
 /**
- * Separate test file for the module-level initial sync in offlineModeStore.
- *
- * The store syncs filterBarStore.downloadedOnly at import time when
- * offlineMode is already true (line 47-49). We test this by pre-populating
- * the mock storage before importing the store module.
+ * Phase 5: the offline-mode → filter-bar sync is now wired explicitly via
+ * `initializeOfflineFilterBarSync()` instead of running at module import.
+ * This file documents the new contract: importing `offlineModeStore` must
+ * NOT touch `filterBarStore`; the sync only kicks in after explicit init.
  */
 
 jest.mock('../persistence/kvStorage', () => require('../persistence/__mocks__/kvStorage'));
@@ -20,11 +19,12 @@ jest.mock('expo-sqlite', () => ({
   }),
 }));
 
-it('syncs downloadedOnly on import when offlineMode is persisted as true', () => {
-  // Get the mock storage that all stores will use (via the jest.mock above).
-  const { kvStorage } = require('../persistence/__mocks__/kvStorage');
+beforeEach(() => {
+  jest.resetModules();
+});
 
-  // Pre-populate so offlineModeStore rehydrates with offlineMode=true.
+it('importing offlineModeStore does NOT touch filterBarStore (post-Phase-5)', () => {
+  const { kvStorage } = require('../persistence/__mocks__/kvStorage');
   kvStorage.setItem(
     'substreamer-offline-mode',
     JSON.stringify({
@@ -33,11 +33,54 @@ it('syncs downloadedOnly on import when offlineMode is persisted as true', () =>
     }),
   );
 
-  // Import filterBarStore first so we can check its state after.
   const { filterBarStore } = require('../filterBarStore');
-
-  // Importing offlineModeStore triggers rehydration + the initial sync check.
+  // Import the offline-mode store — must not have side effects on filterBarStore.
   require('../offlineModeStore');
 
+  expect(filterBarStore.getState().downloadedOnly).toBe(false);
+});
+
+it('initializeOfflineFilterBarSync() mirrors offlineMode into filterBarStore', () => {
+  const { kvStorage } = require('../persistence/__mocks__/kvStorage');
+  kvStorage.setItem(
+    'substreamer-offline-mode',
+    JSON.stringify({
+      state: { offlineMode: true, showInFilterBar: true },
+      version: 0,
+    }),
+  );
+
+  const { filterBarStore } = require('../filterBarStore');
+  const { initializeOfflineFilterBarSync } = require('../offlineModeStore');
+
+  expect(filterBarStore.getState().downloadedOnly).toBe(false);
+
+  const unsub = initializeOfflineFilterBarSync();
   expect(filterBarStore.getState().downloadedOnly).toBe(true);
+
+  unsub();
+});
+
+it('subsequent offlineMode changes are mirrored after init', () => {
+  const { filterBarStore } = require('../filterBarStore');
+  const { offlineModeStore, initializeOfflineFilterBarSync } = require('../offlineModeStore');
+
+  const unsub = initializeOfflineFilterBarSync();
+  expect(filterBarStore.getState().downloadedOnly).toBe(false);
+
+  offlineModeStore.getState().setOfflineMode(true);
+  expect(filterBarStore.getState().downloadedOnly).toBe(true);
+
+  offlineModeStore.getState().setOfflineMode(false);
+  expect(filterBarStore.getState().downloadedOnly).toBe(false);
+
+  unsub();
+});
+
+it('idempotent — repeat calls return the same teardown handle', () => {
+  const { initializeOfflineFilterBarSync } = require('../offlineModeStore');
+  const a = initializeOfflineFilterBarSync();
+  const b = initializeOfflineFilterBarSync();
+  expect(a).toBe(b);
+  a();
 });

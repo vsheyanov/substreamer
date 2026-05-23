@@ -1,7 +1,20 @@
 jest.mock('../persistence/kvStorage', () => require('../persistence/__mocks__/kvStorage'));
 
 import { filterBarStore } from '../filterBarStore';
-import { offlineModeStore } from '../offlineModeStore';
+import { initializeOfflineFilterBarSync, offlineModeStore } from '../offlineModeStore';
+
+// Phase 5: the offline → filterBar subscription is no longer module-scope.
+// Tests that exercise the sync must explicitly init it (idempotent).
+let _filterBarSyncTeardown: (() => void) | null = null;
+
+beforeAll(() => {
+  _filterBarSyncTeardown = initializeOfflineFilterBarSync();
+});
+
+afterAll(() => {
+  _filterBarSyncTeardown?.();
+  _filterBarSyncTeardown = null;
+});
 
 beforeEach(() => {
   offlineModeStore.setState({ offlineMode: false, showInFilterBar: true });
