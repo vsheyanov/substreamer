@@ -14,6 +14,7 @@
     "test": "jest",
     "validate:i18n": "node scripts/validate-translations.js",
     "validate:proguard": "node scripts/validate-proguard-rules.js",
+    "validate:modules": "node scripts/validate-module-inventory.js",
     "test:watch": "jest --watchAll",
     "test:modules": "scripts/test-modules.sh",
     "build:modules": "scripts/build-modules.sh",

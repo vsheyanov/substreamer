@@ -9,22 +9,25 @@
 #   scripts/test-modules.sh --platform android expo-ssl-trust
 #   scripts/test-modules.sh --coverage         # include coverage report
 #
-# Available modules:
-#   expo-async-fs, expo-backup-exclusions, expo-gzip,
-#   expo-ssl-trust, react-native-track-player
+# Module list is discovered dynamically by `scripts/discover-modules.js`
+# (any `modules/<name>/src/__tests__/` qualifies). Adding a new tested
+# module no longer requires updating this script.
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-MODULES=(
-  expo-async-fs
-  expo-backup-exclusions
-  expo-gzip
-  expo-ssl-trust
-  react-native-track-player
-)
+# Single source of truth — see scripts/discover-modules.js
+MODULES=()
+while IFS= read -r module; do
+  [[ -n "$module" ]] && MODULES+=("$module")
+done < <(node "$REPO_ROOT/scripts/discover-modules.js")
+
+if [[ ${#MODULES[@]} -eq 0 ]]; then
+  echo "No modules with tests discovered under modules/*/src/__tests__/" >&2
+  exit 1
+fi
 
 BOLD='\033[1m'
 GREEN='\033[0;32m'

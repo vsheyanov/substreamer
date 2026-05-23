@@ -32,6 +32,9 @@ jobs:
       - name: Validate ProGuard keep rules
         run: node scripts/validate-proguard-rules.js
 
+      - name: Validate module inventory
+        run: node scripts/validate-module-inventory.js
+
       - name: TypeScript compilation check
         run: npx tsc --noEmit
 
