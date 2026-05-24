@@ -49,6 +49,7 @@ import {
   getStreamUrl,
   type Child,
 } from './subsonicService';
+import { recoverStaleSongId } from './staleSongRecoveryService';
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -319,6 +320,101 @@ async function recoverTranscodedStream(adjustedPosition: number): Promise<void> 
 }
 
 /**
+ * Set while a stale-ID recovery is in flight. Prevents the PlaybackError
+ * listener from re-firing recovery for the same track while we're
+ * already mid-swap; cleared when the swap finishes (success or fail).
+ */
+let isRecoveringStaleId = false;
+
+/**
+ * Cheap sync check: is there anything to even try recovering? Returns
+ * false fast (no microtask scheduled) when recovery is plainly
+ * inapplicable — important because the PlaybackError handler hits this
+ * on every failure, including transient blips on offline / local /
+ * incomplete tracks where the await would just waste a frame.
+ */
+function shouldAttemptStaleIdRecovery(): boolean {
+  if (isRecoveringStaleId) return false;
+  if (offlineModeStore.getState().offlineMode) return false;
+
+  const store = playerStore.getState();
+  const current = store.currentTrack;
+  const idx = store.currentTrackIndex;
+  if (!current || idx === null) return false;
+
+  // Need at least one anchor for the match — either a parent album
+  // (cheapest path) or a title (search3 fallback).
+  if (!current.id) return false;
+  if (!current.albumId && !current.title) return false;
+
+  // Local files can't have a stale server ID; they're played from disk.
+  if (getLocalTrackUri(current.id)) return false;
+
+  return true;
+}
+
+/**
+ * Attempt to swap the current track for a freshly-fetched one when its
+ * server ID has gone stale (#146). Returns true if a swap-and-retry was
+ * actually performed (caller should NOT fall through to the standard
+ * auto-retry); false if nothing changed (caller continues normally).
+ *
+ * Triggered from the PlaybackError listener for failures at/near
+ * position 0 — i.e. the song never started, which is consistent with
+ * a 404/error-70 from the server but distinct from mid-stream failures
+ * (those are handled by the transcoded/raw recovery paths).
+ *
+ * Callers must gate this on `shouldAttemptStaleIdRecovery()` first so
+ * we don't await for tracks that are clearly not recoverable.
+ */
+async function performStaleIdSwap(): Promise<boolean> {
+  const store = playerStore.getState();
+  const current = store.currentTrack;
+  const idx = store.currentTrackIndex;
+  // Re-check after the await boundary the caller crossed — state may
+  // have shifted (next track loaded, user navigated away, offline mode
+  // flipped) between shouldAttempt and us actually running.
+  if (!current || idx === null) return false;
+
+  isRecoveringStaleId = true;
+  try {
+    const fresh = await recoverStaleSongId(current);
+    if (!fresh || fresh.id === current.id) return false;
+
+    const newTrack = childToTrack(fresh);
+    if (!newTrack) return false;
+
+    // Mirror the swap into playerStore.queue so subsequent navigation
+    // (next/prev, "go to song") sees the fresh ID, not the dead one.
+    const updatedQueue = [...store.queue];
+    updatedQueue[idx] = fresh;
+    playerStore.getState().setQueue(updatedQueue);
+    playerStore.getState().setCurrentTrack(fresh, idx);
+
+    // Swap in the native queue: remove the dead track, insert the fresh
+    // one at the same index, jump to it. We can't use updateMetadataForTrack
+    // because the URL changes — the native player needs a full reload.
+    await TrackPlayer.remove(idx);
+    await TrackPlayer.add(newTrack, idx);
+    await TrackPlayer.skip(idx);
+    await TrackPlayer.play();
+
+    console.warn(
+      '[Player] Stale-ID recovery: swapped',
+      current.id,
+      '→',
+      fresh.id,
+    );
+    return true;
+  } catch (e) {
+    console.warn('[Player] Stale-ID recovery failed:', e);
+    return false;
+  } finally {
+    isRecoveringStaleId = false;
+  }
+}
+
+/**
  * Retry the current raw (non-transcoded) stream after a playback error
  * and verify the playback position is preserved.
  *
@@ -457,6 +553,22 @@ export async function initPlayer(): Promise<void> {
           recoverRawStream(adjustedPos);
           return;
         }
+      }
+    }
+
+    // --- Stale-ID recovery (#146) ------------------------------------
+    // If the track never started (errorPosition near 0), the most likely
+    // cause beyond a transient network blip is a stale server ID: the
+    // server reindexed the file (Navidrome rescan, octo-fiesta
+    // permanentize) and our cached ID is dead. Try to re-fetch and swap
+    // in the fresh ID once before falling through to the standard retry.
+    // The sync gate keeps us out of the async path entirely when no
+    // recovery is even possible (offline, local file, no anchors).
+    if (!store.retrying && errorPosition < 5 && shouldAttemptStaleIdRecovery()) {
+      const swapped = await performStaleIdSwap();
+      if (swapped) {
+        store.setError(null);
+        return;
       }
     }
 
