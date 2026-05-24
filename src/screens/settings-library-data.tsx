@@ -48,6 +48,10 @@ import { songIndexStore } from '../store/songIndexStore';
 import { syncStatusStore } from '../store/syncStatusStore';
 import { mbidOverrideStore } from '../store/mbidOverrideStore';
 import { offlineModeStore } from '../store/offlineModeStore';
+import {
+  playbackSettingsStore,
+  type MetadataRefreshThreshold,
+} from '../store/playbackSettingsStore';
 import { pendingScrobbleStore } from '../store/pendingScrobbleStore';
 import { scrobbleExclusionStore } from '../store/scrobbleExclusionStore';
 import { shareSettingsStore } from '../store/shareSettingsStore';
@@ -59,6 +63,15 @@ import { minDelay } from '../utils/stringHelpers';
 const MIN_SPINNER_MS = 600;
 const SUCCESS_DELAY_MS = 600;
 const ERROR_DELAY_MS = 2000;
+
+const METADATA_REFRESH_OPTIONS: { value: MetadataRefreshThreshold; labelKey: string }[] = [
+  { value: 'always', labelKey: 'metadataRefreshAlways' },
+  { value: '1hour', labelKey: 'metadataRefresh1hour' },
+  { value: '1day', labelKey: 'metadataRefresh1day' },
+  { value: '1week', labelKey: 'metadataRefresh1week' },
+  { value: '1month', labelKey: 'metadataRefresh1month' },
+  { value: 'never', labelKey: 'metadataRefreshNever' },
+];
 
 type RestoreState = 'idle' | 'restoring' | 'success' | 'error';
 
@@ -100,6 +113,10 @@ export function SettingsLibraryDataScreen() {
   const detailCacheSize = albumDetailStore((s) => Object.keys(s.albums).length);
   const songIndexSize = songIndexStore((s) => s.totalCount);
   const syncPhase = syncStatusStore((s) => s.detailSyncPhase);
+  const metadataRefreshThreshold = playbackSettingsStore((s) => s.metadataRefreshThreshold);
+  const setMetadataRefreshThreshold = playbackSettingsStore(
+    (s) => s.setMetadataRefreshThreshold,
+  );
 
   // --- Listening History state ---
   const pendingScrobbleCount = pendingScrobbleStore((s) => s.pendingScrobbles.length);
@@ -465,6 +482,40 @@ export function SettingsLibraryDataScreen() {
             {t('syncLibraryDescription')}
           </Text>
         </View>
+      </View>
+
+      {/* Metadata Freshness */}
+      <View style={settingsStyles.section}>
+        <Text style={[settingsStyles.sectionTitle, dynamicStyles.sectionTitle]}>
+          {t('metadataRefresh')}
+        </Text>
+        <View style={[settingsStyles.card, dynamicStyles.card]}>
+          {METADATA_REFRESH_OPTIONS.map((opt, index) => {
+            const isActive = metadataRefreshThreshold === opt.value;
+            const isLast = index === METADATA_REFRESH_OPTIONS.length - 1;
+            return (
+              <Pressable
+                key={opt.value}
+                onPress={() => setMetadataRefreshThreshold(opt.value)}
+                style={({ pressed }) => [
+                  styles.radioRow,
+                  !isLast && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+                  pressed && settingsStyles.pressed,
+                ]}
+              >
+                <Text style={[styles.radioLabel, { color: colors.textPrimary }]}>
+                  {t(opt.labelKey)}
+                </Text>
+                {isActive && (
+                  <Ionicons name="checkmark" size={20} color={colors.primary} />
+                )}
+              </Pressable>
+            );
+          })}
+        </View>
+        <Text style={[settingsStyles.sectionHint, { color: colors.textSecondary }]}>
+          {t('metadataRefreshDescription')}
+        </Text>
       </View>
 
       {/* Listening History (was Scrobbles) */}
@@ -954,6 +1005,16 @@ export function SettingsLibraryDataScreen() {
 }
 
 const styles = StyleSheet.create({
+  radioRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  radioLabel: {
+    fontSize: 15,
+  },
   offlineNotice: {
     flexDirection: 'row',
     alignItems: 'center',

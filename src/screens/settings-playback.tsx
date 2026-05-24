@@ -16,9 +16,7 @@ import {
   FORMAT_PRESETS,
   playbackSettingsStore,
   SKIP_INTERVALS,
-  type ArtistPlayMode,
   type MaxBitRate,
-  type MetadataRefreshThreshold,
   type RemoteControlMode,
   type SkipInterval,
   type StreamFormat,
@@ -47,20 +45,6 @@ const REMOTE_OPTIONS: { value: RemoteControlMode; labelKey: string; subtitleKey:
   { value: 'skip-interval', labelKey: 'remoteSkipForwardBackward', subtitleKey: 'remoteSkipForwardBackwardSubtitle' },
 ];
 
-const ARTIST_PLAY_MODE_OPTIONS: { value: ArtistPlayMode; labelKey: string }[] = [
-  { value: 'topSongs', labelKey: 'topSongs' },
-  { value: 'allSongs', labelKey: 'allSongs' },
-];
-
-const METADATA_REFRESH_OPTIONS: { value: MetadataRefreshThreshold; labelKey: string }[] = [
-  { value: 'always', labelKey: 'metadataRefreshAlways' },
-  { value: '1hour', labelKey: 'metadataRefresh1hour' },
-  { value: '1day', labelKey: 'metadataRefresh1day' },
-  { value: '1week', labelKey: 'metadataRefresh1week' },
-  { value: '1month', labelKey: 'metadataRefresh1month' },
-  { value: 'never', labelKey: 'metadataRefreshNever' },
-];
-
 export function SettingsPlaybackScreen() {
   const { t } = useTranslation();
   const { colors } = useTheme();
@@ -87,17 +71,11 @@ export function SettingsPlaybackScreen() {
   const skipBackwardInterval = playbackSettingsStore((s) => s.skipBackwardInterval);
   const skipForwardInterval = playbackSettingsStore((s) => s.skipForwardInterval);
   const remoteControlMode = playbackSettingsStore((s) => s.remoteControlMode);
-  const artistPlayMode = playbackSettingsStore((s) => s.artistPlayMode);
-  const metadataRefreshThreshold = playbackSettingsStore((s) => s.metadataRefreshThreshold);
-  const setMetadataRefreshThreshold = playbackSettingsStore(
-    (s) => s.setMetadataRefreshThreshold,
-  );
   const setShowSkipIntervalButtons = playbackSettingsStore((s) => s.setShowSkipIntervalButtons);
   const setShowSleepTimerButton = playbackSettingsStore((s) => s.setShowSleepTimerButton);
   const setSkipBackwardInterval = playbackSettingsStore((s) => s.setSkipBackwardInterval);
   const setSkipForwardInterval = playbackSettingsStore((s) => s.setSkipForwardInterval);
   const setRemoteControlMode = playbackSettingsStore((s) => s.setRemoteControlMode);
-  const setArtistPlayMode = playbackSettingsStore((s) => s.setArtistPlayMode);
 
   const isDefault =
     maxBitRate === null &&
@@ -109,9 +87,7 @@ export function SettingsPlaybackScreen() {
     !showSleepTimerButton &&
     skipBackwardInterval === 15 &&
     skipForwardInterval === 30 &&
-    remoteControlMode === 'skip-track' &&
-    artistPlayMode === 'topSongs' &&
-    metadataRefreshThreshold === '1week';
+    remoteControlMode === 'skip-track';
 
   const handleRemoteChange = useCallback(
     (mode: RemoteControlMode) => {
@@ -141,8 +117,6 @@ export function SettingsPlaybackScreen() {
             setSkipBackwardInterval(15);
             setSkipForwardInterval(30);
             setRemoteControlMode('skip-track');
-            setArtistPlayMode('topSongs');
-            setMetadataRefreshThreshold('1week');
             updateRemoteCapabilities();
             setBitrateOpen(false);
             setDlBitrateOpen(false);
@@ -152,7 +126,7 @@ export function SettingsPlaybackScreen() {
         },
       ],
     );
-  }, [setMaxBitRate, setStreamFormat, setEstimateContentLength, setDownloadMaxBitRate, setDownloadFormat, setShowSkipIntervalButtons, setShowSleepTimerButton, setSkipBackwardInterval, setSkipForwardInterval, setRemoteControlMode, setArtistPlayMode, setMetadataRefreshThreshold]);
+  }, [setMaxBitRate, setStreamFormat, setEstimateContentLength, setDownloadMaxBitRate, setDownloadFormat, setShowSkipIntervalButtons, setShowSleepTimerButton, setSkipBackwardInterval, setSkipForwardInterval, setRemoteControlMode]);
 
   const dynamicStyles = useMemo(
     () =>
@@ -488,72 +462,6 @@ export function SettingsPlaybackScreen() {
                         {t(opt.subtitleKey)}
                       </Text>
                     </View>
-                    {isActive && (
-                      <Ionicons name="checkmark" size={20} color={colors.primary} />
-                    )}
-                  </Pressable>
-                );
-              })}
-            </View>
-          </View>
-
-          {/* Metadata Refresh Threshold */}
-          <View style={settingsStyles.section}>
-            <Text style={[settingsStyles.sectionTitle, dynamicStyles.sectionTitle]}>
-              {t('metadataRefresh')}
-            </Text>
-            <Text style={[styles.sectionHint, { color: colors.textSecondary }]}>
-              {t('metadataRefreshDescription')}
-            </Text>
-            <View style={[settingsStyles.card, { backgroundColor: colors.card }]}>
-              {METADATA_REFRESH_OPTIONS.map((opt, index) => {
-                const isActive = metadataRefreshThreshold === opt.value;
-                const isLast = index === METADATA_REFRESH_OPTIONS.length - 1;
-                return (
-                  <Pressable
-                    key={opt.value}
-                    onPress={() => setMetadataRefreshThreshold(opt.value)}
-                    style={({ pressed }) => [
-                      styles.radioRow,
-                      !isLast && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
-                      pressed && settingsStyles.pressed,
-                    ]}
-                  >
-                    <Text style={[styles.label, { color: colors.textPrimary }]}>
-                      {t(opt.labelKey)}
-                    </Text>
-                    {isActive && (
-                      <Ionicons name="checkmark" size={20} color={colors.primary} />
-                    )}
-                  </Pressable>
-                );
-              })}
-            </View>
-          </View>
-
-          {/* Artist Play Mode */}
-          <View style={settingsStyles.section}>
-            <Text style={[settingsStyles.sectionTitle, dynamicStyles.sectionTitle]}>{t('artistPlayMode')}</Text>
-            <Text style={[styles.sectionHint, { color: colors.textSecondary }]}>
-              {t('artistPlayModeDescription')}
-            </Text>
-            <View style={[settingsStyles.card, { backgroundColor: colors.card }]}>
-              {ARTIST_PLAY_MODE_OPTIONS.map((opt, index) => {
-                const isActive = artistPlayMode === opt.value;
-                const isLast = index === ARTIST_PLAY_MODE_OPTIONS.length - 1;
-                return (
-                  <Pressable
-                    key={opt.value}
-                    onPress={() => setArtistPlayMode(opt.value)}
-                    style={({ pressed }) => [
-                      styles.radioRow,
-                      !isLast && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
-                      pressed && settingsStyles.pressed,
-                    ]}
-                  >
-                    <Text style={[styles.label, { color: colors.textPrimary }]}>
-                      {t(opt.labelKey)}
-                    </Text>
                     {isActive && (
                       <Ionicons name="checkmark" size={20} color={colors.primary} />
                     )}

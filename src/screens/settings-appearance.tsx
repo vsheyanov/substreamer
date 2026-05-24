@@ -23,12 +23,21 @@ import {
 import { albumListsStore } from '../store/albumListsStore';
 import { artistDetailStore } from '../store/artistDetailStore';
 import { offlineModeStore } from '../store/offlineModeStore';
+import {
+  playbackSettingsStore,
+  type ArtistPlayMode,
+} from '../store/playbackSettingsStore';
 import { processingOverlayStore } from '../store/processingOverlayStore';
 
 const THEME_OPTIONS: { value: ThemePreference; labelKey: string; icon: 'phone-portrait-outline' | 'sunny-outline' | 'moon-outline' }[] = [
   { value: 'system', labelKey: 'themeSystem', icon: 'phone-portrait-outline' },
   { value: 'light', labelKey: 'themeLight', icon: 'sunny-outline' },
   { value: 'dark', labelKey: 'themeDark', icon: 'moon-outline' },
+];
+
+const ARTIST_PLAY_MODE_OPTIONS: { value: ArtistPlayMode; labelKey: string }[] = [
+  { value: 'topSongs', labelKey: 'topSongs' },
+  { value: 'allSongs', labelKey: 'allSongs' },
 ];
 
 const LAYOUT_ROWS: { key: 'albumLayout' | 'artistLayout' | 'playlistLayout'; labelKey: string }[] = [
@@ -122,6 +131,9 @@ export function SettingsAppearanceScreen() {
 
   const listLength = layoutPreferencesStore((s) => s.listLength);
   const setListLength = layoutPreferencesStore((s) => s.setListLength);
+
+  const artistPlayMode = playbackSettingsStore((s) => s.artistPlayMode);
+  const setArtistPlayMode = playbackSettingsStore((s) => s.setArtistPlayMode);
 
   const includePartialInDownloadedFilter = layoutPreferencesStore(
     (s) => s.includePartialInDownloadedFilter,
@@ -508,6 +520,40 @@ export function SettingsAppearanceScreen() {
         </View>
       </View>
 
+      {/* Artist Play Mode — moved from Sound & Playback (2026-05-24); it's
+          a layout/behaviour preference rather than a playback engine
+          setting, sits more naturally with the listLength + filters group. */}
+      <View style={settingsStyles.section}>
+        <Text style={[settingsStyles.sectionTitle, dynamicStyles.sectionTitle]}>{t('artistPlayMode')}</Text>
+        <Text style={[styles.sectionHint, { color: colors.textSecondary }]}>
+          {t('artistPlayModeDescription')}
+        </Text>
+        <View style={[settingsStyles.card, { backgroundColor: colors.card }]}>
+          {ARTIST_PLAY_MODE_OPTIONS.map((opt, index) => {
+            const isActive = artistPlayMode === opt.value;
+            const isLast = index === ARTIST_PLAY_MODE_OPTIONS.length - 1;
+            return (
+              <Pressable
+                key={opt.value}
+                onPress={() => setArtistPlayMode(opt.value)}
+                style={({ pressed }) => [
+                  styles.artistPlayModeRow,
+                  !isLast && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+                  pressed && settingsStyles.pressed,
+                ]}
+              >
+                <Text style={[styles.chipLabel, { color: colors.textPrimary }]}>
+                  {t(opt.labelKey)}
+                </Text>
+                {isActive && (
+                  <Ionicons name="checkmark" size={20} color={colors.primary} />
+                )}
+              </Pressable>
+            );
+          })}
+        </View>
+      </View>
+
       <View style={settingsStyles.section}>
         <Text style={[settingsStyles.sectionTitle, dynamicStyles.sectionTitle]}>{t('filters')}</Text>
         <View style={[settingsStyles.card, { backgroundColor: colors.card }]}>
@@ -623,6 +669,13 @@ export function SettingsAppearanceScreen() {
 }
 
 const styles = StyleSheet.create({
+  artistPlayModeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
   sectionHint: {
     fontSize: 12,
     marginBottom: 8,
