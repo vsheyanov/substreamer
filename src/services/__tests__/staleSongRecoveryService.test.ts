@@ -24,10 +24,24 @@ jest.mock('../../store/albumDetailStore', () => ({
   },
 }));
 
+const mockOffline = { offlineMode: false };
+jest.mock('../../store/offlineModeStore', () => ({
+  offlineModeStore: { getState: () => mockOffline },
+}));
+
+const mockPlaybackSettings = { metadataRefreshThreshold: '5min' as string };
+jest.mock('../../store/playbackSettingsStore', () => ({
+  playbackSettingsStore: { getState: () => mockPlaybackSettings },
+}));
+
 import { search3 } from '../subsonicService';
 import { renameCachedSongFile } from '../musicCacheService';
 import { remapCachedSongId } from '../../store/persistence/musicCacheTables';
-import { findMatchingSong, recoverStaleSongId } from '../staleSongRecoveryService';
+import {
+  findMatchingSong,
+  recoverStaleSongId,
+  refreshAndRecoverForPlay,
+} from '../staleSongRecoveryService';
 
 const mockSearch3 = search3 as jest.Mock;
 const mockRename = renameCachedSongFile as jest.Mock;
@@ -49,6 +63,8 @@ beforeEach(() => {
   mockSearch3.mockResolvedValue({ albums: [], artists: [], songs: [] });
   mockRename.mockReturnValue('missing');
   mockRemap.mockReturnValue(false);
+  mockOffline.offlineMode = false;
+  mockPlaybackSettings.metadataRefreshThreshold = '5min';
 });
 
 describe('findMatchingSong', () => {
@@ -278,5 +294,90 @@ describe('recoverStaleSongId — search3 fallback', () => {
       makeSong({ id: 'old', albumId: 'a1', title: 'X', artist: 'A' }),
     );
     expect(result?.current.id).toBe('recovered');
+  });
+});
+
+describe('refreshAndRecoverForPlay — freshness threshold gating', () => {
+  const FRESH = Date.now() - 60_000;          // 1 min old → fresh under 5min threshold
+  const STALE_5MIN = Date.now() - 6 * 60_000;  // 6 min old → stale under 5min threshold
+
+  it('returns null when no albumId anchor', async () => {
+    const result = await refreshAndRecoverForPlay(makeSong({ id: 's1' }));
+    expect(result).toBeNull();
+    expect(mockFetchAlbum).not.toHaveBeenCalled();
+  });
+
+  it('returns null in offline mode', async () => {
+    mockOffline.offlineMode = true;
+    const result = await refreshAndRecoverForPlay(makeSong({ id: 's1', albumId: 'a1' }));
+    expect(result).toBeNull();
+    expect(mockFetchAlbum).not.toHaveBeenCalled();
+  });
+
+  it('returns null when threshold is "never"', async () => {
+    mockPlaybackSettings.metadataRefreshThreshold = 'never';
+    const result = await refreshAndRecoverForPlay(makeSong({ id: 's1', albumId: 'a1' }));
+    expect(result).toBeNull();
+    expect(mockFetchAlbum).not.toHaveBeenCalled();
+  });
+
+  it('always refreshes when threshold is "always" — even with a fresh cache', async () => {
+    mockPlaybackSettings.metadataRefreshThreshold = 'always';
+    mockAlbums['a1'] = { retrievedAt: FRESH, album: { id: 'a1', song: [] } };
+    mockFetchAlbum.mockResolvedValue({ id: 'a1', song: [] });
+
+    await refreshAndRecoverForPlay(makeSong({ id: 's1', albumId: 'a1', title: 'T' }));
+    expect(mockFetchAlbum).toHaveBeenCalledWith('a1');
+  });
+
+  it('skips refresh when cache is fresher than the threshold', async () => {
+    mockPlaybackSettings.metadataRefreshThreshold = '5min';
+    mockAlbums['a1'] = { retrievedAt: FRESH, album: { id: 'a1', song: [] } };
+
+    const result = await refreshAndRecoverForPlay(makeSong({ id: 's1', albumId: 'a1' }));
+    expect(result).toBeNull();
+    expect(mockFetchAlbum).not.toHaveBeenCalled();
+  });
+
+  it('refreshes when cache is older than the threshold', async () => {
+    mockPlaybackSettings.metadataRefreshThreshold = '5min';
+    mockAlbums['a1'] = { retrievedAt: STALE_5MIN, album: { id: 'a1', song: [] } };
+    mockFetchAlbum.mockResolvedValue({
+      id: 'a1',
+      song: [makeSong({ id: 'fresh-1', title: 'Track Title', artist: 'Artist Name' })],
+    });
+
+    const result = await refreshAndRecoverForPlay(
+      makeSong({ id: 'old-1', albumId: 'a1' }),
+    );
+    expect(mockFetchAlbum).toHaveBeenCalledWith('a1');
+    expect(result?.current.id).toBe('fresh-1');
+  });
+
+  it('refreshes when the album has never been cached', async () => {
+    mockPlaybackSettings.metadataRefreshThreshold = '5min';
+    // No mockAlbums['a1'] entry — never visited.
+    mockFetchAlbum.mockResolvedValue({
+      id: 'a1',
+      song: [makeSong({ id: 'fresh-1', title: 'Track Title', artist: 'Artist Name' })],
+    });
+
+    const result = await refreshAndRecoverForPlay(
+      makeSong({ id: 'old-1', albumId: 'a1' }),
+    );
+    expect(mockFetchAlbum).toHaveBeenCalledWith('a1');
+    expect(result?.current.id).toBe('fresh-1');
+  });
+
+  it('returns null when refresh shows the server still has the cached id', async () => {
+    mockPlaybackSettings.metadataRefreshThreshold = 'always';
+    mockFetchAlbum.mockResolvedValue({
+      id: 'a1',
+      song: [makeSong({ id: 's1', title: 'Track Title', artist: 'Artist Name' })],
+    });
+
+    const result = await refreshAndRecoverForPlay(makeSong({ id: 's1', albumId: 'a1' }));
+    // Cache may have been refreshed but no real id change → null.
+    expect(result).toBeNull();
   });
 });

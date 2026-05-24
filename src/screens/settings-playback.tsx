@@ -18,6 +18,7 @@ import {
   SKIP_INTERVALS,
   type ArtistPlayMode,
   type MaxBitRate,
+  type MetadataRefreshThreshold,
   type RemoteControlMode,
   type SkipInterval,
   type StreamFormat,
@@ -51,6 +52,14 @@ const ARTIST_PLAY_MODE_OPTIONS: { value: ArtistPlayMode; labelKey: string }[] = 
   { value: 'allSongs', labelKey: 'allSongs' },
 ];
 
+const METADATA_REFRESH_OPTIONS: { value: MetadataRefreshThreshold; labelKey: string }[] = [
+  { value: 'always', labelKey: 'metadataRefreshAlways' },
+  { value: '5min', labelKey: 'metadataRefresh5min' },
+  { value: '15min', labelKey: 'metadataRefresh15min' },
+  { value: '1hour', labelKey: 'metadataRefresh1hour' },
+  { value: 'never', labelKey: 'metadataRefreshNever' },
+];
+
 export function SettingsPlaybackScreen() {
   const { t } = useTranslation();
   const { colors } = useTheme();
@@ -78,6 +87,10 @@ export function SettingsPlaybackScreen() {
   const skipForwardInterval = playbackSettingsStore((s) => s.skipForwardInterval);
   const remoteControlMode = playbackSettingsStore((s) => s.remoteControlMode);
   const artistPlayMode = playbackSettingsStore((s) => s.artistPlayMode);
+  const metadataRefreshThreshold = playbackSettingsStore((s) => s.metadataRefreshThreshold);
+  const setMetadataRefreshThreshold = playbackSettingsStore(
+    (s) => s.setMetadataRefreshThreshold,
+  );
   const setShowSkipIntervalButtons = playbackSettingsStore((s) => s.setShowSkipIntervalButtons);
   const setShowSleepTimerButton = playbackSettingsStore((s) => s.setShowSleepTimerButton);
   const setSkipBackwardInterval = playbackSettingsStore((s) => s.setSkipBackwardInterval);
@@ -96,7 +109,8 @@ export function SettingsPlaybackScreen() {
     skipBackwardInterval === 15 &&
     skipForwardInterval === 30 &&
     remoteControlMode === 'skip-track' &&
-    artistPlayMode === 'topSongs';
+    artistPlayMode === 'topSongs' &&
+    metadataRefreshThreshold === '5min';
 
   const handleRemoteChange = useCallback(
     (mode: RemoteControlMode) => {
@@ -127,6 +141,7 @@ export function SettingsPlaybackScreen() {
             setSkipForwardInterval(30);
             setRemoteControlMode('skip-track');
             setArtistPlayMode('topSongs');
+            setMetadataRefreshThreshold('5min');
             updateRemoteCapabilities();
             setBitrateOpen(false);
             setDlBitrateOpen(false);
@@ -136,7 +151,7 @@ export function SettingsPlaybackScreen() {
         },
       ],
     );
-  }, [setMaxBitRate, setStreamFormat, setEstimateContentLength, setDownloadMaxBitRate, setDownloadFormat, setShowSkipIntervalButtons, setShowSleepTimerButton, setSkipBackwardInterval, setSkipForwardInterval, setRemoteControlMode, setArtistPlayMode]);
+  }, [setMaxBitRate, setStreamFormat, setEstimateContentLength, setDownloadMaxBitRate, setDownloadFormat, setShowSkipIntervalButtons, setShowSleepTimerButton, setSkipBackwardInterval, setSkipForwardInterval, setRemoteControlMode, setArtistPlayMode, setMetadataRefreshThreshold]);
 
   const dynamicStyles = useMemo(
     () =>
@@ -472,6 +487,40 @@ export function SettingsPlaybackScreen() {
                         {t(opt.subtitleKey)}
                       </Text>
                     </View>
+                    {isActive && (
+                      <Ionicons name="checkmark" size={20} color={colors.primary} />
+                    )}
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+
+          {/* Metadata Refresh Threshold */}
+          <View style={settingsStyles.section}>
+            <Text style={[settingsStyles.sectionTitle, dynamicStyles.sectionTitle]}>
+              {t('metadataRefresh')}
+            </Text>
+            <Text style={[styles.sectionHint, { color: colors.textSecondary }]}>
+              {t('metadataRefreshDescription')}
+            </Text>
+            <View style={[settingsStyles.card, { backgroundColor: colors.card }]}>
+              {METADATA_REFRESH_OPTIONS.map((opt, index) => {
+                const isActive = metadataRefreshThreshold === opt.value;
+                const isLast = index === METADATA_REFRESH_OPTIONS.length - 1;
+                return (
+                  <Pressable
+                    key={opt.value}
+                    onPress={() => setMetadataRefreshThreshold(opt.value)}
+                    style={({ pressed }) => [
+                      styles.radioRow,
+                      !isLast && { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
+                      pressed && settingsStyles.pressed,
+                    ]}
+                  >
+                    <Text style={[styles.label, { color: colors.textPrimary }]}>
+                      {t(opt.labelKey)}
+                    </Text>
                     {isActive && (
                       <Ionicons name="checkmark" size={20} color={colors.primary} />
                     )}

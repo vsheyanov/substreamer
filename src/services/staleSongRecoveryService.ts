@@ -34,6 +34,11 @@
  * path can handle.
  */
 import { albumDetailStore } from '../store/albumDetailStore';
+import { offlineModeStore } from '../store/offlineModeStore';
+import {
+  playbackSettingsStore,
+  type MetadataRefreshThreshold,
+} from '../store/playbackSettingsStore';
 import { remapCachedSongId } from '../store/persistence/musicCacheTables';
 import {
   getAlbum as _getAlbumUnused,
@@ -272,4 +277,56 @@ export async function recoverStaleSongId(
   }
 
   return null;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Proactive refresh (before queue load)                              */
+/* ------------------------------------------------------------------ */
+
+const THRESHOLD_MS: Record<Exclude<MetadataRefreshThreshold, 'always' | 'never'>, number> = {
+  '5min': 5 * 60_000,
+  '15min': 15 * 60_000,
+  '1hour': 60 * 60_000,
+};
+
+/**
+ * True when the cached album is older than the user's freshness threshold
+ * (or not cached at all, when the threshold isn't 'never').
+ */
+function isAlbumCacheStale(albumId: string): boolean {
+  const threshold = playbackSettingsStore.getState().metadataRefreshThreshold;
+  if (threshold === 'never') return false;
+  if (threshold === 'always') return true;
+  const cached = albumDetailStore.getState().albums[albumId];
+  // No cache → treat as stale so we always go pick up fresh IDs the
+  // first time we encounter an album in a play action.
+  if (!cached) return true;
+  return Date.now() - cached.retrievedAt > THRESHOLD_MS[threshold];
+}
+
+/**
+ * Pre-flight refresh used at the queue-load boundary (`playTrack`).
+ *
+ * Returns the same shape as `recoverStaleSongId` so the caller can
+ * apply album-wide swaps to the incoming queue before native player
+ * setup. Returns null when:
+ *   - the song has no albumId anchor
+ *   - the user is in offline mode
+ *   - the user's freshness threshold says the cache is still fresh
+ *   - the refresh produced no changes (server still has the cached id)
+ *
+ * This is the primary protection against #146 (stale-ID stream
+ * failures) — by the time playback actually starts, the queue is
+ * built from fresh data and the user never sees a 'Source error'
+ * flash. The reactive `recoverStaleSongId` path remains as a backstop
+ * for the edge cases this misses (queue restore after app open,
+ * mid-queue drift, etc.).
+ */
+export async function refreshAndRecoverForPlay(
+  song: Child,
+): Promise<StaleIdRecoveryResult | null> {
+  if (!song.albumId) return null;
+  if (offlineModeStore.getState().offlineMode) return null;
+  if (!isAlbumCacheStale(song.albumId)) return null;
+  return recoverStaleSongId(song);
 }

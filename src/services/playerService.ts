@@ -49,7 +49,10 @@ import {
   getStreamUrl,
   type Child,
 } from './subsonicService';
-import { recoverStaleSongId } from './staleSongRecoveryService';
+import {
+  recoverStaleSongId,
+  refreshAndRecoverForPlay,
+} from './staleSongRecoveryService';
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -1137,7 +1140,20 @@ export async function playTrack(
     await waitForTrackMapsReady();
     await ensureCoverArtAuth();
 
-    const { rnTracks, filteredQueue } = buildPlayableQueue(queue);
+    // Proactive stale-ID recovery (#146 primary): refresh the source
+    // album BEFORE building the queue so dead IDs never reach the
+    // native player. Gated by the user's metadata-freshness threshold
+    // (skip when cache is fresh enough OR set to 'never'). Apply any
+    // album-wide swaps to the incoming track + queue.
+    let effectiveTrack = track;
+    let effectiveQueue = queue;
+    const proactive = await refreshAndRecoverForPlay(track);
+    if (proactive && proactive.swaps.size > 0) {
+      effectiveTrack = proactive.swaps.get(track.id) ?? track;
+      effectiveQueue = queue.map((c) => proactive.swaps.get(c.id) ?? c);
+    }
+
+    const { rnTracks, filteredQueue } = buildPlayableQueue(effectiveQueue);
 
     if (rnTracks.length === 0) {
       playbackToastStore.getState().fail(i18n.t('noOfflineTracksInQueue'));
@@ -1160,7 +1176,7 @@ export async function playTrack(
     // Translate the tapped track onto the filtered queue. If the tapped
     // track isn't playable (non-cached + offline), start at 0 rather
     // than blocking — users expect something to happen.
-    let startIndex = filteredQueue.findIndex((c) => c.id === track.id);
+    let startIndex = filteredQueue.findIndex((c) => c.id === effectiveTrack.id);
     if (startIndex === -1) startIndex = 0;
 
     await TrackPlayer.reset();
