@@ -25,8 +25,10 @@ import {
   createNewPlaylist,
   getAlbum,
   getPlaylist,
+  getRandomSongsFiltered,
   getSimilarSongs,
   getSimilarSongs2,
+  getTopSongs,
   starAlbum,
   starArtist,
   starSong,
@@ -155,14 +157,74 @@ export async function removeItemFromQueue(index: number): Promise<void> {
 /* ------------------------------------------------------------------ */
 
 /**
+ * Build a "more like this" play queue for a given source song.
+ *
+ * Many Subsonic servers (Navidrome in particular) lean on last.fm
+ * metadata for `getSimilarSongs`, so the result is often just 2-3 tracks
+ * for less-popular artists — way short of the user's list-length setting.
+ * To keep the queue useful we top up via a layered fallback chain,
+ * stopping as soon as we reach the target:
+ *
+ *   1. `getSimilarSongs(id)`          — per-song similarity (highest signal)
+ *   2. `getSimilarSongs2(artistId)`   — artist-level similarity
+ *   3. `getRandomSongsFiltered(genre)`— same-genre random
+ *   4. `getTopSongs(artist)`          — same artist's top tracks
+ *
+ * Each layer is deduped against the running set (and the source song),
+ * preserving layer order so the highest-signal tracks play first.
+ *
+ * Exported for unit tests. Used by `playMoreLikeThis`.
+ */
+export async function buildMoreLikeThisQueue(
+  source: Child,
+  target: number,
+): Promise<Child[]> {
+  const seen = new Set<string>([source.id]);
+  const out: Child[] = [];
+  const push = (tracks: readonly Child[] | null | undefined): void => {
+    if (!tracks) return;
+    for (const t of tracks) {
+      if (out.length >= target) return;
+      if (!t?.id || seen.has(t.id)) continue;
+      seen.add(t.id);
+      out.push(t);
+    }
+  };
+
+  push(await getSimilarSongs(source.id, target));
+  if (out.length >= target) return out;
+
+  if (source.artistId) {
+    push(await getSimilarSongs2(source.artistId, target));
+    if (out.length >= target) return out;
+  }
+
+  const genre = source.genre ?? source.genres?.[0];
+  if (genre) {
+    // Request 2× target so dedup leaves us with plenty of fresh picks.
+    push(await getRandomSongsFiltered({ size: target * 2, genre }));
+    if (out.length >= target) return out;
+  }
+
+  if (source.artist) {
+    push(await getTopSongs(source.artist, target));
+  }
+
+  return out;
+}
+
+/**
  * Fetch similar songs for a given track and set them as the play queue.
  * Uses processing overlay for progress, success, and error feedback.
+ * Falls back through `buildMoreLikeThisQueue` to keep the queue full
+ * even when the server returns few per-song matches.
  */
 export async function playMoreLikeThis(song: Child): Promise<void> {
   processingOverlayStore.getState().show(i18n.t('loading'));
 
   try {
-    const tracks = await getSimilarSongs(song.id, layoutPreferencesStore.getState().listLength);
+    const target = layoutPreferencesStore.getState().listLength;
+    const tracks = await buildMoreLikeThisQueue(song, target);
     if (tracks.length === 0) {
       processingOverlayStore.getState().showError(i18n.t('noSimilarSongsFound'));
       return;
