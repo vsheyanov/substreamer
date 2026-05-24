@@ -1,5 +1,9 @@
 # Changelog
 
+## [8.0.64] - 2026-05-24
+
+- fix(detail): unify hero positioning on paddingTop, drop iOS contentOffset
+- ci: update coverage badge [skip ci]
 ## [8.0.63] - 2026-05-24
 
 - ci: update coverage badge [skip ci]
