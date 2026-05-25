@@ -615,20 +615,17 @@ export function SettingsServerScreen() {
             <Ionicons name="key-outline" size={18} color="#fff" />
             <Text style={styles.changePasswordButtonText}>{t('changePassword')}</Text>
           </Pressable>
+          <Pressable
+            style={({ pressed }) => [
+              styles.logoutButton,
+              dynamicStyles.logoutButton,
+              pressed && styles.logoutButtonPressed,
+            ]}
+            onPress={handleLogout}
+          >
+            <Text style={[styles.logoutButtonText, dynamicStyles.logoutButtonText]}>{t('logOut')}</Text>
+          </Pressable>
         </View>
-      </View>
-
-      <View style={styles.logoutSection}>
-        <Pressable
-          style={({ pressed }) => [
-            styles.logoutButton,
-            dynamicStyles.logoutButton,
-            pressed && styles.logoutButtonPressed,
-          ]}
-          onPress={handleLogout}
-        >
-          <Text style={[styles.logoutButtonText, dynamicStyles.logoutButtonText]}>{t('logOut')}</Text>
-        </Pressable>
       </View>
     </ScrollView>
     <BottomChrome withSafeAreaPadding />
@@ -1048,9 +1045,6 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'flex-end',
   },
-  logoutSection: {
-    marginTop: 'auto',
-  },
   logoutButton: {
     backgroundColor: 'transparent',
     borderWidth: 1,
@@ -1058,6 +1052,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     alignItems: 'center',
     justifyContent: 'center',
+    marginTop: 12,
   },
   logoutButtonPressed: {
     opacity: 0.8,
