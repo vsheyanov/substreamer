@@ -46,6 +46,8 @@ import Animated, {
 import WaveformLogo from './WaveformLogo';
 import {
   cacheAllSizes,
+  SOURCE_SIZE,
+  subscribeImageCacheUpdate,
   deleteCachedVariant,
   getCachedImageUri,
 } from '../services/imageCacheService';
@@ -165,6 +167,10 @@ export const CachedImage = memo(function CachedImage({
   const currentIdRef = useRef(coverArtId);
   const retriedRef = useRef(false);
   const retryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Set after we swap remoteUri to the SOURCE_SIZE URL as a fallback for
+  // a server that fails at smaller sizes. Prevents the give-up branch
+  // from re-entering the fallback path on subsequent errors.
+  const sourceFallbackAttemptedRef = useRef(false);
 
   /* ---- fade-in shared value (remote URLs only) --------------------- */
   // Initial opacity: 1 for trusted instant URIs (cached files + bundled
@@ -175,6 +181,7 @@ export const CachedImage = memo(function CachedImage({
   useEffect(() => {
     currentIdRef.current = coverArtId;
     retriedRef.current = false;
+    sourceFallbackAttemptedRef.current = false;
     if (retryTimeoutRef.current) {
       clearTimeout(retryTimeoutRef.current);
       retryTimeoutRef.current = null;
@@ -246,6 +253,21 @@ export const CachedImage = memo(function CachedImage({
     };
   }, []);
 
+  /* ---- subscribe to cache-update events for this coverArtId -------- */
+  // If a future cacheAllSizes call (e.g. from the hero on the album-
+  // detail screen) successfully lands the file on disk AFTER this card
+  // gave up to placeholder, the subscription fires and bumps
+  // reloadNonce — the next render re-derives `cachedUri` from the
+  // filesystem and the card switches from placeholder to the cached
+  // image without user interaction. Fixes the "stuck on placeholder
+  // even though hero loaded fine" class of bug.
+  useEffect(() => {
+    if (!coverArtId) return;
+    return subscribeImageCacheUpdate(coverArtId, () => {
+      setReloadNonce((n) => n + 1);
+    });
+  }, [coverArtId]);
+
   /* ---- recover from offline-mode errorSuppress on reconnect -------- */
   // The offline branch of handleImageError sets errorSuppress=true and
   // returns early without scheduling a retry that would lift it. Without
@@ -312,13 +334,38 @@ export const CachedImage = memo(function CachedImage({
     }
 
     if (retriedRef.current) {
-      // Second failure — give up on the remote attempts. Drop the
-      // remote URL and lift errorSuppress so a freshly cached file URI
-      // (delivered later by the cacheAllSizes promise from the retry
-      // path) can render on the next reloadNonce bump. Without lifting
-      // errorSuppress here, the common-reset above pins it true and
-      // the card stays on the placeholder forever even when disk
-      // eventually has the file.
+      // Second failure at the requested size. Before giving up to the
+      // placeholder, try the SOURCE_SIZE (600) URL as a last-resort
+      // fallback IF we asked for a smaller size — some servers and
+      // proxies fail at smaller sizes (e.g. octo-fiesta resize quirks)
+      // while still serving the full source correctly. Showing the
+      // bigger image scaled down beats sitting on a placeholder.
+      // Skip if we already tried the fallback, or the requested size
+      // IS the source size (nothing larger to ask for).
+      if (
+        !sourceFallbackAttemptedRef.current
+        && size !== SOURCE_SIZE
+        && size > 0
+      ) {
+        const sourceUrl = getCoverArtUrl(coverArtId, SOURCE_SIZE);
+        if (sourceUrl) {
+          logImageCache(
+            `CachedImage source-size-fallback id=${coverArtId} requested=${size} fallback=${SOURCE_SIZE}`,
+          );
+          sourceFallbackAttemptedRef.current = true;
+          // Reset the retry budget so the fallback URL gets its own
+          // one-shot retry if it ALSO fails. The fallback flag ensures
+          // we don't loop back into this branch a third time.
+          retriedRef.current = false;
+          setErrorSuppress(false);
+          setRemoteUri(`${sourceUrl}&_src=${Date.now()}`);
+          return;
+        }
+      }
+      // Either we already tried the source-size fallback, or no
+      // fallback is possible. Drop the remote URL and lift errorSuppress
+      // so a freshly cached file URI (delivered later by the cache-
+      // update subscription) can render on the next reloadNonce bump.
       setRemoteUri(undefined);
       setErrorSuppress(false);
       return;

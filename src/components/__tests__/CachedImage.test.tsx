@@ -43,6 +43,8 @@ jest.mock('../../services/imageCacheService', () => ({
   getCachedImageUri: (id: string, size: number) => mockGetCachedImageUri(id, size),
   cacheAllSizes: (id: string) => mockCacheAllSizes(id),
   deleteCachedVariant: (id: string, size: number) => mockDeleteCachedVariant(id, size),
+  SOURCE_SIZE: 600,
+  subscribeImageCacheUpdate: jest.fn(() => () => {}),
 }));
 
 const mockGetCoverArtUrl = jest.fn<string | null, [string, number]>();
@@ -340,6 +342,12 @@ describe('CachedImage', () => {
     // resolve the retry's cacheAllSizes call AFTER the second error
     // fires, simulating the real race: cacheAllSizes lands the file on
     // disk while RN's <Image> is busy erroring out.
+    //
+    // Renders at size=600 (SOURCE_SIZE) so the new source-size fallback
+    // path (which kicks in on second-failure for smaller sizes) is NOT
+    // triggered — the test exercises the give-up-to-placeholder path
+    // followed by cache-resolver recovery, which is independent of the
+    // fallback behaviour.
     mockGetCachedImageUri.mockReturnValue(null);
     let resolveRetryCache: (() => void) | null = null;
     mockCacheAllSizes
@@ -351,7 +359,7 @@ describe('CachedImage', () => {
       );
 
     const { queryByTestId, toJSON, UNSAFE_root } = render(
-      <CachedImage coverArtId="album1" size={300} />,
+      <CachedImage coverArtId="album1" size={600} />,
     );
     await flushEffects();
 
@@ -394,7 +402,7 @@ describe('CachedImage', () => {
     // Now the disk has the file (cacheAllSizes finished writing) and
     // its promise resolves → setReloadNonce++ → next render must show
     // the cached file URI.
-    mockGetCachedImageUri.mockReturnValue('file:///cache/abc/300.jpg');
+    mockGetCachedImageUri.mockReturnValue('file:///cache/abc/600.jpg');
     await act(async () => {
       resolveRetryCache!();
       await Promise.resolve();
@@ -404,7 +412,7 @@ describe('CachedImage', () => {
     const recovered = getRenderedImageHandlers(
       toJSON,
       UNSAFE_root,
-      'file:///cache/abc/300.jpg',
+      'file:///cache/abc/600.jpg',
     );
     expect(recovered).not.toBeNull();
   });
@@ -603,5 +611,111 @@ describe('CachedImage', () => {
       'file:///cache/late-land/50.jpg',
     );
     expect(cachedImg).not.toBeNull();
+  });
+
+  // After two failures at a smaller size, fall back to the SOURCE_SIZE
+  // (600) URL instead of giving up to the placeholder. Some servers /
+  // proxies fail at smaller variants but serve the source fine; this
+  // recovers the card without user action.
+  it('11. source-size fallback fires after second failure at a smaller size', async () => {
+    mockGetCachedImageUri.mockReturnValue(null);
+    mockCacheAllSizes.mockResolvedValue(undefined);
+    // Size-aware mock so we can verify the fallback ACTUALLY requested
+    // size=600 (and not the original 150).
+    mockGetCoverArtUrl.mockImplementation(
+      (id, size) => `https://example.com/cover.jpg?t=abc&id=${id}&s=${size}`,
+    );
+
+    const { toJSON, UNSAFE_root } = render(
+      <CachedImage coverArtId="failsAt150" size={150} />,
+    );
+    await flushEffects();
+
+    // First debounce → remote URL at requested size (150).
+    await act(async () => {
+      jest.advanceTimersByTime(150);
+      await Promise.resolve();
+    });
+    const first = getRenderedImageHandlers(toJSON, UNSAFE_root, 's=150');
+    expect(first).not.toBeNull();
+
+    // First error → one-shot retry scheduled.
+    await act(async () => {
+      first!.onError?.();
+      await Promise.resolve();
+    });
+
+    // Retry fires (still size=150 with cache-buster).
+    await act(async () => {
+      jest.advanceTimersByTime(2500);
+      await Promise.resolve();
+    });
+    const retry = getRenderedImageHandlers(toJSON, UNSAFE_root, '_r=');
+    expect(retry).not.toBeNull();
+    expect(retry!.source.uri).toMatch(/[?&]s=150(&|$)/);
+
+    // Second error — should swap to the SOURCE_SIZE (600) URL.
+    await act(async () => {
+      retry!.onError?.();
+      await Promise.resolve();
+    });
+
+    const fallback = getRenderedImageHandlers(toJSON, UNSAFE_root, '_src=');
+    expect(fallback).not.toBeNull();
+    expect(fallback!.source.uri).toMatch(/[?&]s=600(&|$)/);
+  });
+
+  // After the SOURCE_SIZE fallback ALSO fails (its own retry budget
+  // exhausted), the card finally settles on the placeholder.
+  it('12. source-size fallback exhaustion lands on placeholder', async () => {
+    mockGetCachedImageUri.mockReturnValue(null);
+    mockCacheAllSizes.mockResolvedValue(undefined);
+
+    const { queryByTestId, toJSON, UNSAFE_root } = render(
+      <CachedImage coverArtId="failsAt150" size={150} />,
+    );
+    await flushEffects();
+
+    await act(async () => {
+      jest.advanceTimersByTime(150);
+      await Promise.resolve();
+    });
+    // Walk all the failure stages: requested-size first error → retry →
+    // requested-size second error → source-size fallback → source-size
+    // first error → retry → source-size second error → placeholder.
+    const fireErrorAndAdvance = async () => {
+      const all = findImagesInJSON(toJSON);
+      const handlers = getRenderedImageHandlers(
+        toJSON,
+        UNSAFE_root,
+        all[0]?.props?.source?.uri ?? '',
+      );
+      await act(async () => {
+        handlers!.onError?.();
+        await Promise.resolve();
+      });
+      await act(async () => {
+        jest.advanceTimersByTime(2500);
+        await Promise.resolve();
+      });
+    };
+
+    await fireErrorAndAdvance(); // first 150 error → retry
+    await fireErrorAndAdvance(); // retry 150 error → fallback to 600
+    await fireErrorAndAdvance(); // first 600 error → retry
+    // Last 600 retry error — placeholder.
+    const last = findImagesInJSON(toJSON)[0];
+    await act(async () => {
+      const handlers = getRenderedImageHandlers(
+        toJSON,
+        UNSAFE_root,
+        last.props.source.uri,
+      );
+      handlers!.onError?.();
+      await Promise.resolve();
+    });
+
+    expect(queryByTestId('waveform-placeholder')).not.toBeNull();
+    expect(findImagesInJSON(toJSON)).toHaveLength(0);
   });
 });

@@ -35,6 +35,7 @@ import {
   markFsKeyMigrationDone,
   markReconcileRan,
 } from '../store/imageCacheStore';
+import { authStore } from '../store/authStore';
 import { connectivityStore } from '../store/connectivityStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import { fireAndForget } from '../utils/fireAndForget';
@@ -98,8 +99,10 @@ function isSentinelCoverArtId(coverArtId: string): boolean {
 /** All image size tiers used across the app. */
 export const IMAGE_SIZES = [50, 150, 300, 600] as const;
 
-/** The single size downloaded from the server; smaller sizes are derived locally. */
-const SOURCE_SIZE = 600;
+/** Largest variant — also the server-side source we download. Exported
+ *  so CachedImage can use it as a fallback when a smaller variant URL
+ *  fails server-side. */
+export const SOURCE_SIZE = 600;
 
 /** Sizes generated locally from the SOURCE_SIZE image. */
 const RESIZE_SIZES = [300, 150, 50] as const;
@@ -143,6 +146,68 @@ const pendingResolvers = new Map<string, (() => void)[]>();
  * for the same coverArtId + size combination. Keyed by "coverArtId:size".
  */
 const uriCache = new Map<string, string | null>();
+
+/* ------------------------------------------------------------------ */
+/*  Cache-update subscriptions                                          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Per-coverArtId listener registry. When a cover art download or resize
+ * lands a new file on disk, every subscriber for that coverArtId is
+ * notified so it can re-derive its cached URI.
+ *
+ * Motivation: CachedImage instances on the home screen sometimes "give
+ * up" on a flaky cover after two server errors and sit on the
+ * placeholder. Later, the same coverArtId may successfully download via
+ * a different code path — e.g. the user navigates to the album-detail
+ * hero which retriggers cacheAllSizes from a fresh CachedImage mount,
+ * and that attempt succeeds (server-side transient cleared). Without
+ * the subscription, the placeholder card has no way to learn about the
+ * new file landing on disk. With it, the card auto-refreshes as soon
+ * as any subsequent download completes for its coverArtId.
+ */
+const cacheUpdateListeners = new Map<string, Set<() => void>>();
+
+/**
+ * Subscribe to cache-update events for a specific coverArtId. The
+ * listener fires exactly once per (download-success OR resize-success)
+ * event after subscribing — fire-and-forget; the listener is
+ * responsible for calling `getCachedImageUri` to read the new state.
+ *
+ * Returns an unsubscribe function. Safe to call from useEffect.
+ */
+export function subscribeImageCacheUpdate(
+  coverArtId: string,
+  listener: () => void,
+): () => void {
+  if (!coverArtId) return () => {};
+  let listeners = cacheUpdateListeners.get(coverArtId);
+  if (!listeners) {
+    listeners = new Set();
+    cacheUpdateListeners.set(coverArtId, listeners);
+  }
+  listeners.add(listener);
+  return () => {
+    const set = cacheUpdateListeners.get(coverArtId);
+    if (!set) return;
+    set.delete(listener);
+    if (set.size === 0) cacheUpdateListeners.delete(coverArtId);
+  };
+}
+
+/**
+ * Notify all subscribers for a coverArtId. Called from the source-
+ * download success path and from generateResizedVariant's success path.
+ * Listener exceptions are swallowed so one bad subscriber can't poison
+ * the rest.
+ */
+function notifyImageCacheUpdate(coverArtId: string): void {
+  const listeners = cacheUpdateListeners.get(coverArtId);
+  if (!listeners || listeners.size === 0) return;
+  for (const listener of listeners) {
+    try { listener(); } catch { /* swallow */ }
+  }
+}
 
 function uriCacheKey(coverArtId: string, size: number): string {
   return `${coverArtId}:${size}`;
@@ -1059,7 +1124,21 @@ async function downloadSourceImage(
   if (!url) {
     // Null URL means offline, missing auth, or a sentinel slipped past
     // the upstream guards. Treated as transient — the row is preserved
-    // for a later attempt once we're back online / authenticated.
+    // for a later attempt once we're back online / authenticated. Log
+    // WHICH of those conditions tripped so future "source-download-null"
+    // patterns in user reports are actionable.
+    const offline = offlineModeStore.getState().offlineMode;
+    const auth = authStore.getState();
+    const authState = !auth.isLoggedIn
+      ? 'not-logged-in'
+      : !auth.serverUrl
+        ? 'no-server-url'
+        : !auth.username
+          ? 'no-username'
+          : 'ok';
+    logImageCache(
+      `download id=${coverArtId} url=null offline=${offline} auth=${authState} sentinel=${isSentinelCoverArtId(coverArtId)}`,
+    );
     return null;
   }
 
@@ -1142,6 +1221,7 @@ async function downloadSourceImage(
     uriCache.set(uriCacheKey(coverArtId, SOURCE_SIZE), dest.uri);
 
     logImageCache(`download id=${coverArtId} ok bytes=${bytes.length} ext=${ext.slice(1)}`);
+    notifyImageCacheUpdate(coverArtId);
     return dest.uri;
   } catch (e) {
     const tmp = new File(subDir, tmpName);
@@ -1217,6 +1297,7 @@ async function generateResizedVariant(
     // Success — reset any accumulated failures for this cover.
     variantFailureCount.delete(coverArtId);
     logImageCache(`resize id=${coverArtId} size=${size} ok bytes=${dest.size ?? 0}`);
+    notifyImageCacheUpdate(coverArtId);
   } catch (e) {
     const next = (variantFailureCount.get(coverArtId) ?? 0) + 1;
     variantFailureCount.set(coverArtId, next);
