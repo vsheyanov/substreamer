@@ -1,3 +1,5 @@
+import { calendarDaysBetween } from './dateKey';
+
 /**
  * Return the uppercase first letter of a name, or '#' for non-alpha characters.
  * Used by list views for alphabet scroller section indexing.
@@ -39,17 +41,34 @@ export function minDelay(ms = 2000): Promise<void> {
 /**
  * Format a timestamp as a human-readable relative time string.
  * Requires i18next `t` function for localised output.
+ *
+ * "Yesterday" / "N days ago" use CALENDAR days (in local time), not
+ * elapsed 24-hour buckets. A play "47 hours ago" used to render as
+ * "yesterday" via `Math.floor(hours / 24) === 1`, but that disagreed
+ * with the streak / heatmap views which are calendar-based. Consistent
+ * across views now: if the streak says yesterday was empty, the recent-
+ * play row won't claim to be "yesterday".
  */
 export function timeAgo(ts: number, t: (key: string, opts?: Record<string, unknown>) => string): string {
-  const diff = Date.now() - ts;
+  const now = Date.now();
+  const diff = now - ts;
   const mins = Math.floor(diff / 60_000);
   if (mins < 1) return t('justNow');
   if (mins < 60) return t('minutesAgo', { count: mins });
   const hours = Math.floor(mins / 60);
   if (hours < 24) return t('hoursAgo', { count: hours });
+
+  // Calendar-aware days bucket. Walk back at most a week from today to
+  // find which calendar bucket the timestamp falls in.
+  const cd = calendarDaysBetween(ts, now, 8);
+  if (cd === 1) return t('yesterday');
+  if (cd >= 2 && cd <= 6) return t('daysAgo', { count: cd });
+  // cd === 0 here means same calendar day but >= 24 hours elapsed — a
+  // clock or timezone shift edge case. Fall back to the hours bucket.
+  if (cd === 0) return t('hoursAgo', { count: hours });
+
+  // Beyond a week — preserve original elapsed-time rendering.
   const days = Math.floor(hours / 24);
-  if (days === 1) return t('yesterday');
-  if (days < 7) return t('daysAgo', { count: days });
   const weeks = Math.floor(days / 7);
   if (weeks < 5) return t('weeksAgo', { count: weeks });
   const months = Math.floor(days / 30);

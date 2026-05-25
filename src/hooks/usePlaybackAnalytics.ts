@@ -2,7 +2,12 @@ import { useMemo } from 'react';
 
 import { type Child } from '../services/subsonicService';
 import { type AnalyticsAggregates } from '../store/completedScrobbleStore';
+import { dateKey, offsetDateKey } from '../utils/dateKey';
 import { getPrimaryGenre } from '../utils/genreHelpers';
+
+// Re-export so consumers that imported from this file historically keep
+// working without touching every call site.
+export { dateKey } from '../utils/dateKey';
 
 export type TimePeriod = '7d' | '30d' | '90d' | 'all';
 
@@ -70,19 +75,6 @@ const PERIOD_DAYS: Record<TimePeriod, number | null> = {
 };
 
 const HEATMAP_WEEKS = 16;
-
-export function dateKey(ts: number): string {
-  const d = new Date(ts);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-
-function offsetDateKey(dk: string, offset: number): string {
-  const [y, m, d] = dk.split('-').map(Number);
-  return dateKey(new Date(y, m - 1, d + offset).getTime());
-}
 
 export function computeStreaks(input: Pick<ScrobbleRecord, 'time'>[] | string[]): {
   longest: number;
@@ -182,6 +174,13 @@ export function usePlaybackAnalytics(
   pendingScrobbles?: Pick<ScrobbleRecord, 'time'>[],
   aggregates?: AnalyticsAggregates,
 ): PlaybackAnalytics {
+  // Stable per-calendar-day key. Drives recomputation across midnight
+  // so the streak doesn't show yesterday's "current streak" until the
+  // user navigates away and back. Cheap — dateKey(Date.now()) is a
+  // handful of integer ops per render, and the equality check upstream
+  // means the memo only re-runs on actual day rollover.
+  const todayKey = dateKey(Date.now());
+
   // Period-independent: heatmap + streaks (always use all data)
   const periodIndependent = useMemo(() => {
     // Heatmap
@@ -226,7 +225,7 @@ export function usePlaybackAnalytics(
     }
 
     return { heatmapData, ...streaks };
-  }, [aggregates, scrobbles, pendingScrobbles]);
+  }, [aggregates, scrobbles, pendingScrobbles, todayKey]);
 
   // Period-dependent: stats, tops, charts
   const periodDependent = useMemo(() => {
@@ -266,9 +265,13 @@ export function usePlaybackAnalytics(
 
       const dailyActivity: DailyActivity[] = [];
       const activityDays = 90;
-      const now = Date.now();
+      // Walk back day-by-day using calendar component arithmetic so a DST
+      // transition can't skip or duplicate a date. Fixed 86_400_000 ms
+      // steps would silently drop the transition day (the local day is
+      // 23 or 25 hours, not 24).
+      const todayKey = dateKey(Date.now());
       for (let i = activityDays - 1; i >= 0; i--) {
-        const dk = dateKey(now - i * 86_400_000);
+        const dk = offsetDateKey(todayKey, -i);
         dailyActivity.push({ date: dk, count: aggregates.dayCounts[dk] ?? 0 });
       }
 
@@ -382,9 +385,11 @@ export function usePlaybackAnalytics(
 
     const activityDays = periodDays ?? 90;
     const dailyActivity: DailyActivity[] = [];
-    const now = Date.now();
+    // Walk back day-by-day using calendar component arithmetic so a DST
+    // transition can't skip or duplicate a date.
+    const todayKey = dateKey(Date.now());
     for (let i = activityDays - 1; i >= 0; i--) {
-      const dk = dateKey(now - i * 86_400_000);
+      const dk = offsetDateKey(todayKey, -i);
       dailyActivity.push({ date: dk, count: dayCounts.get(dk) ?? 0 });
     }
 
@@ -406,7 +411,7 @@ export function usePlaybackAnalytics(
       peakHour: computePeakHour(hourBuckets),
       averagePlaysPerDay,
     };
-  }, [scrobbles, period, aggregates]);
+  }, [scrobbles, period, aggregates, todayKey]);
 
   return useMemo(() => ({
     ...periodDependent,
