@@ -110,14 +110,7 @@ describe('getCoverArtUrl', () => {
     expect(url).not.toContain('size=');
   });
 
-  it('appends format=jpg when format=jpg is requested', async () => {
-    await ensureCoverArtAuth();
-    const url = getCoverArtUrl('al-1', 600, 'jpg');
-    expect(url).toContain('format=jpg');
-    expect(url).toContain('size=600');
-  });
-
-  it('omits format param by default', async () => {
+  it('omits format param', async () => {
     await ensureCoverArtAuth();
     const url = getCoverArtUrl('al-1', 600);
     expect(url).not.toContain('format=');

@@ -1,21 +1,38 @@
 import ExpoModulesCore
 import Foundation
 import UIKit
+import ImageIO
+import CoreGraphics
 
 public class ExpoImageResizeModule: Module {
   public func definition() -> ModuleDefinition {
     Name("ExpoImageResize")
 
-    // Resize a local JPEG to `maxWidth` pixels wide (aspect-preserving)
+    // Resize a local image to `maxWidth` pixels wide (aspect-preserving)
     // and write the result as a JPEG at `quality` to `targetUri`.
-    // `AsyncFunction` dispatches this to a background queue automatically.
+    //
+    // Decode strategy (Phases 2 + 4):
+    //   1. Fast path: UIImage(contentsOfFile:) — handles JPEG / PNG /
+    //      WebP / HEIC etc. that UIImage natively accepts.
+    //   2. Fallback path: CGImageSource decode — used when UIImage
+    //      returns nil. CGImageSource has broader format coverage and
+    //      gives us the raw CGImage we can re-draw through a known
+    //      color space, fixing common "decode succeeds but renderer
+    //      barfs" issues with CMYK JPEGs, embedded ICC profiles, and
+    //      unusual PNG variants.
+    //   3. Always-sanitise pre-flight: regardless of which decode path
+    //      produced the image, we draw it into a renderer that's pinned
+    //      to standard-range sRGB output, so the JPEG we write is in a
+    //      colour space every downstream consumer (RN's <Image>, the
+    //      OS preview, share sheet, etc.) handles cleanly.
+    //
+    // `AsyncFunction` dispatches each call to a background queue
+    // automatically.
     AsyncFunction("resizeImageToFileAsync") { (sourceUri: String, targetUri: String, maxWidth: Int, quality: Double) in
       let sourcePath = Self.resolvePath(sourceUri)
       let targetPath = Self.resolvePath(targetUri)
 
-      guard let source = UIImage(contentsOfFile: sourcePath) else {
-        throw ResizeError.decodeFailed(sourcePath)
-      }
+      let source = try Self.decodeSource(sourcePath)
       guard source.size.width > 0, source.size.height > 0 else {
         throw ResizeError.invalidDimensions
       }
@@ -27,12 +44,16 @@ public class ExpoImageResizeModule: Module {
         height: max(1, (targetWidth * aspect).rounded())
       )
 
-      // Scale 1 keeps output pixel count == targetSize; the default scale
-      // uses screen DPI which would produce 2x or 3x larger bitmaps than
-      // we want for our disk cache.
+      // Phase 4: pin the renderer to sRGB / standard range so the
+      // output JPEG is in a colour space every downstream consumer
+      // handles. Without this the renderer follows the device display
+      // (which can be P3 on iPhone 7+), producing wider-gamut JPEGs
+      // that subtly mis-render under some Android decoders that
+      // ingest covers via share/backup-restore flows.
       let format = UIGraphicsImageRendererFormat()
       format.scale = 1
       format.opaque = true
+      format.preferredRange = .standard
       let renderer = UIGraphicsImageRenderer(size: targetSize, format: format)
       let resized = renderer.image { _ in
         source.draw(in: CGRect(origin: .zero, size: targetSize))
@@ -51,6 +72,64 @@ public class ExpoImageResizeModule: Module {
       )
       try data.write(to: targetUrl)
     }
+  }
+
+  /// Two-phase decode: try UIImage first (fast path covers the vast
+  /// majority of cover art), then fall back to a CGImageSource +
+  /// sRGB-context redraw for sources UIImage refuses. The fallback
+  /// path is the recovery for CMYK JPEGs and PNGs with unusual ICC
+  /// profiles where UIImage returns nil rather than the canonical
+  /// in-memory representation.
+  private static func decodeSource(_ sourcePath: String) throws -> UIImage {
+    if let fast = UIImage(contentsOfFile: sourcePath) {
+      return fast
+    }
+
+    // UIImage refused. Try the lower-level ImageIO decoder.
+    let url = URL(fileURLWithPath: sourcePath)
+    guard let cgSource = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+      throw ResizeError.decodeFailed(sourcePath)
+    }
+    // Force the source to fully decode immediately, into a known sRGB
+    // colour space — both options together cover CMYK conversion and
+    // strip embedded profiles that would otherwise carry through.
+    let options: [CFString: Any] = [
+      kCGImageSourceShouldCache: true,
+      kCGImageSourceShouldAllowFloat: false,
+    ]
+    guard let cgImage = CGImageSourceCreateImageAtIndex(cgSource, 0, options as CFDictionary) else {
+      throw ResizeError.decodeFailed(sourcePath)
+    }
+
+    // Re-draw into an explicit sRGB CGContext to normalise the colour
+    // space — CMYK / Lab / CalRGB sources all collapse to sRGB here.
+    let width = cgImage.width
+    let height = cgImage.height
+    guard width > 0, height > 0 else {
+      throw ResizeError.invalidDimensions
+    }
+    guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else {
+      throw ResizeError.decodeFailed(sourcePath)
+    }
+    let bitmapInfo = CGBitmapInfo(rawValue:
+      CGImageAlphaInfo.noneSkipLast.rawValue
+    )
+    guard let context = CGContext(
+      data: nil,
+      width: width,
+      height: height,
+      bitsPerComponent: 8,
+      bytesPerRow: 0,
+      space: colorSpace,
+      bitmapInfo: bitmapInfo.rawValue
+    ) else {
+      throw ResizeError.decodeFailed(sourcePath)
+    }
+    context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+    guard let normalised = context.makeImage() else {
+      throw ResizeError.decodeFailed(sourcePath)
+    }
+    return UIImage(cgImage: normalised)
   }
 
   private static func resolvePath(_ uri: String) -> String {

@@ -1016,82 +1016,11 @@ describe('generateResizedVariant — 3-failure circuit breaker purges row', () =
     expect(mockDbRows.has(mockDbKey(id, 600))).toBe(true);
   });
 
-  it('arms format=jpg for the next download after a 3-strike purge', async () => {
-    const id = 'force-jpg-cover';
-
-    // First pass: source on disk, resize blows up 3 times → purge fires.
-    mockDirExistsMap.set(subDirName(id), true);
-    mockFileExistsMap.set(fileMockName(id, '600.jpg'), true);
-    seedDbRow({ coverArtId: id, size: 600 });
-    for (const s of IMAGE_SIZES) evictUriCacheEntry(id, s);
-    mockResizeImageToFileAsync.mockRejectedValue(new Error('persistent decode failure'));
-
-    await cacheAllSizes(id);
-
-    // Sanity: purge happened.
-    expect(mockDeleteCachedImagesForCoverArt).toHaveBeenCalledWith(id);
-
-    // Second pass: simulate the post-purge state — no row, no source. The
-    // download path should be entered fresh and `getCoverArtUrl` must be
-    // called with the `'jpg'` format flag this time.
-    (getCoverArtUrl as jest.Mock).mockClear();
-    (getCoverArtUrl as jest.Mock).mockReturnValue('https://example.com/cover.jpg?format=jpg');
-    mockFileExistsMap.delete(fileMockName(id, '600.jpg'));
-    for (const s of IMAGE_SIZES) evictUriCacheEntry(id, s);
-    // Drain anything else the test runner left in flight before our pass.
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      headers: { get: () => 'image/jpeg' },
-      arrayBuffer: async () => new ArrayBuffer(64),
-    });
-
-    await cacheAllSizes(id);
-
-    expect(getCoverArtUrl).toHaveBeenCalledWith(id, 600, 'jpg');
-  });
-
-  it('clears the format=jpg flag once the next resize succeeds', async () => {
-    const id = 'recover-then-default';
-
-    // Arm the flag via a purge cycle.
-    mockDirExistsMap.set(subDirName(id), true);
-    mockFileExistsMap.set(fileMockName(id, '600.jpg'), true);
-    seedDbRow({ coverArtId: id, size: 600 });
-    for (const s of IMAGE_SIZES) evictUriCacheEntry(id, s);
-    mockResizeImageToFileAsync.mockRejectedValue(new Error('boom'));
-    await cacheAllSizes(id);
-    expect(mockDeleteCachedImagesForCoverArt).toHaveBeenCalledWith(id);
-
-    // Pass 2: server returns a clean JPEG, resize succeeds. Flag clears.
-    mockFileExistsMap.delete(fileMockName(id, '600.jpg'));
-    for (const s of IMAGE_SIZES) evictUriCacheEntry(id, s);
-    mockResizeImageToFileAsync.mockReset();
-    mockResizeImageToFileAsync.mockImplementation(async (_src, targetUri) => {
-      mockFileExistsMap.set(targetUri.replace(/^file:\/\//, ''), true);
-    });
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      headers: { get: () => 'image/jpeg' },
-      arrayBuffer: async () => new ArrayBuffer(64),
-    });
-    (getCoverArtUrl as jest.Mock).mockClear();
-    (getCoverArtUrl as jest.Mock).mockReturnValue('https://example.com/cover.jpg');
-    await cacheAllSizes(id);
-    expect(getCoverArtUrl).toHaveBeenCalledWith(id, 600, 'jpg');
-
-    // Pass 3: clean state, no prior failure — flag is cleared, no format
-    // param should be requested this time.
-    mockFileExistsMap.delete(fileMockName(id, '600.jpg'));
-    for (const s of IMAGE_SIZES) evictUriCacheEntry(id, s);
-    mockFetch.mockResolvedValueOnce({
-      ok: true,
-      headers: { get: () => 'image/jpeg' },
-      arrayBuffer: async () => new ArrayBuffer(64),
-    });
-    (getCoverArtUrl as jest.Mock).mockClear();
-    await cacheAllSizes(id);
-    expect(getCoverArtUrl).toHaveBeenCalledWith(id, 600, undefined);
-  });
+  // Note: the previous `format=jpg` post-purge recovery was a no-op
+  // (Subsonic getCoverArt doesn't define a `format` parameter — the
+  // server simply returned the same un-decodable bytes). The retry
+  // machinery + tests have been removed; CachedImage's source-size
+  // fallback handles user-visible recovery instead.
 });
 
 describe('listCachedImagesAsync — reconstructs URIs from DB row shape', () => {

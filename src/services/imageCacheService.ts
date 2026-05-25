@@ -1055,11 +1055,7 @@ async function downloadSourceImage(
   subDir: Directory,
 ): Promise<string | null> {
   await ensureCoverArtAuth();
-  // If the previous resize burned through the 3-strike budget, ask the
-  // server to re-encode the source as a baseline JPEG. Otherwise request
-  // the original bytes verbatim.
-  const forceJpg = resizeFailedCovers.has(coverArtId);
-  const url = getCoverArtUrl(coverArtId, SOURCE_SIZE, forceJpg ? 'jpg' : undefined);
+  const url = getCoverArtUrl(coverArtId, SOURCE_SIZE);
   if (!url) {
     // Null URL means offline, missing auth, or a sentinel slipped past
     // the upstream guards. Treated as transient — the row is preserved
@@ -1072,9 +1068,7 @@ async function downloadSourceImage(
   // preserved. Connectivity service surfaces the outage separately.
   let response: Awaited<ReturnType<typeof fetch>>;
   try {
-    logImageCache(
-      `download id=${coverArtId} start${forceJpg ? ' format=jpg' : ''} url=${url}`,
-    );
+    logImageCache(`download id=${coverArtId} start url=${url}`);
     response = await fetch(url);
   } catch (e) {
     logImageCache(
@@ -1182,23 +1176,6 @@ const variantFailureCount = new Map<string, number>();
 const MAX_VARIANT_FAILURES = 3;
 
 /**
- * Set of coverArtIds that hit the resize-failure threshold during this
- * session. The next download for any cover in this set requests the
- * source from the server with `&format=jpg`, which most Subsonic-
- * compatible servers (Navidrome, Airsonic, Subsonic itself) honor by
- * re-encoding the cover as a baseline JPEG — giving the local decoder
- * clean bytes on the retry instead of the same problematic encoding
- * (CMYK, 12-bit, progressive with non-standard markers, content-type
- * mismatch, etc.) that just failed.
- *
- * Cleared per-cover on the next successful resize. Survives only in
- * memory: a process restart loses the flag, the next access uses the
- * default URL, and if the source is still un-decodable the cycle
- * recovers naturally through another purge → flag set → format=jpg.
- */
-const resizeFailedCovers = new Set<string>();
-
-/**
  * Generate a single resized variant from the 600px source using the
  * local `expo-image-resize` native module. Writes to a .tmp file first,
  * then renames. The module uses `BitmapFactory.decodeFile` (Android) /
@@ -1239,13 +1216,35 @@ async function generateResizedVariant(
 
     // Success — reset any accumulated failures for this cover.
     variantFailureCount.delete(coverArtId);
-    resizeFailedCovers.delete(coverArtId);
     logImageCache(`resize id=${coverArtId} size=${size} ok bytes=${dest.size ?? 0}`);
   } catch (e) {
     const next = (variantFailureCount.get(coverArtId) ?? 0) + 1;
     variantFailureCount.set(coverArtId, next);
+    // Phase 1 diagnostics — capture source-side context on every resize
+    // failure so we can pin down the actual offending format from user
+    // logs without another instrumentation round-trip. Gated by the
+    // image-cache logging flag (see imageCacheLogger). The native
+    // modules emit their own decode-path information via the thrown
+    // error message when their low-level fallbacks kick in.
+    let sourceBytes = -1;
+    let sourceExt = 'unknown';
+    try {
+      const sourceFile = new File(sourceUri.replace(/^file:\/\//, ''));
+      if (sourceFile.exists) {
+        sourceBytes = sourceFile.size ?? -1;
+      }
+      // Extension is what the cache wrote based on Content-Type at
+      // download time — telling us "claimed format" without needing
+      // to do a sync byte read on a file we can't read synchronously
+      // in the new expo-file-system API.
+      const match = sourceUri.match(/\.([a-z0-9]{2,5})$/i);
+      if (match) sourceExt = match[1].toLowerCase();
+    } catch {
+      /* best-effort — diagnostic only */
+    }
     logImageCache(
-      `resize id=${coverArtId} size=${size} fail count=${next}/${MAX_VARIANT_FAILURES} err=${e instanceof Error ? e.message : String(e)}`,
+      `resize id=${coverArtId} size=${size} fail count=${next}/${MAX_VARIANT_FAILURES} `
+      + `srcBytes=${sourceBytes} srcExt=${sourceExt} err=${e instanceof Error ? e.message : String(e)}`,
     );
     if (tmpFile.exists) {
       try { tmpFile.delete(); } catch { /* best-effort */ }
@@ -1255,13 +1254,15 @@ async function generateResizedVariant(
       console.warn(
         `[imageCacheService] ${next} consecutive resize failures for coverArt=${coverArtId} — purging cache rows`,
       );
-      logImageCache(`resize id=${coverArtId} threshold-purge format-jpg-armed`);
+      logImageCache(`resize id=${coverArtId} threshold-purge`);
       purgeCoverArtRows(coverArtId);
-      // Arm the format=jpg fallback for the next download attempt. If the
-      // source we just gave up on was CMYK / mismatched-content-type / or
-      // any other variant the local decoder can't handle, asking the
-      // server to re-encode usually fixes it.
-      resizeFailedCovers.add(coverArtId);
+      // No further server-side recovery is attempted. The Subsonic spec
+      // for `getCoverArt` accepts only `id` and `size`; the previously-
+      // used `format=jpg` query was a no-op (the server returned the
+      // same un-decodable bytes). User-visible recovery is handled
+      // upstream in CachedImage's source-size fallback, which renders
+      // the (decodable) 600 source in the smaller slot when smaller
+      // variants are unavailable.
     }
   }
 }
