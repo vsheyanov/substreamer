@@ -8,10 +8,10 @@ jest.mock('../playerService', () => ({
 // subsonicService bridge — we stub buildPingApi + clearApiCache and let
 // the real authStore drive state.
 const mockPing = jest.fn();
-const mockBuildPingApi = jest.fn(() => ({ ping: mockPing }));
+const mockBuildPingApi: jest.Mock = jest.fn(() => ({ ping: mockPing }));
 const mockClearApiCache = jest.fn();
 jest.mock('../subsonicService', () => ({
-  buildPingApi: (...args: unknown[]) => mockBuildPingApi(...args),
+  buildPingApi: (url: string) => mockBuildPingApi(url),
   clearApiCache: () => mockClearApiCache(),
 }));
 

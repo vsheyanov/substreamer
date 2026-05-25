@@ -24,6 +24,7 @@ import {
   stopPolling,
 } from '../services/scanService';
 import { changePassword, clearApiCache, login, normalizeServerUrl } from '../services/subsonicService';
+import { switchToServer } from '../services/failoverService';
 import { canUserScan, isAdminRoleUnknown, supports } from '../services/serverCapabilityService';
 import { authStore } from '../store/authStore';
 import { deviceIdentityStore } from '../store/deviceIdentityStore';
@@ -40,6 +41,9 @@ export function SettingsServerScreen() {
   const insets = useSafeAreaInsets();
   const headerHeight = useContext(HeaderHeightContext) ?? 0;
   const serverUrl = authStore((s) => s.serverUrl);
+  const primaryServerUrl = authStore((s) => s.primaryServerUrl);
+  const secondaryServerUrl = authStore((s) => s.secondaryServerUrl);
+  const activeServer = authStore((s) => s.activeServer);
   const username = authStore((s) => s.username);
   const password = authStore((s) => s.password);
   const [passwordVisible, setPasswordVisible] = useState(false);
@@ -55,6 +59,14 @@ export function SettingsServerScreen() {
     | { kind: 'passed'; testedUrl: string }
     | { kind: 'failed'; error: string };
   const [serverUrlTest, setServerUrlTest] = useState<ServerUrlTestState>({ kind: 'idle' });
+  // Secondary-URL editor mirrors the primary editor state machine so the
+  // UX (Test → Save gate, inline status) is identical. Saving the
+  // secondary is cheaper than primary: no clearQueue / clearApiCache /
+  // capability refetch, because secondary isn't active.
+  const [secondaryUrlSheetVisible, setSecondaryUrlSheetVisible] = useState(false);
+  const [secondaryUrlInput, setSecondaryUrlInput] = useState('');
+  const [secondaryUrlSaved, setSecondaryUrlSaved] = useState(false);
+  const [secondaryUrlTest, setSecondaryUrlTest] = useState<ServerUrlTestState>({ kind: 'idle' });
   const [changePasswordVisible, setChangePasswordVisible] = useState(false);
   const [currentPw, setCurrentPw] = useState('');
   const [newPw, setNewPw] = useState('');
@@ -129,12 +141,65 @@ export function SettingsServerScreen() {
     clearQueue();
     auth.setSession(normalised, auth.username, auth.password, auth.apiVersion, auth.legacyAuth);
     clearApiCache();
-    // Clear stale server-info — capability flags / version / extensions
-    // belong to whichever server was at the old URL, not the new one.
-    serverInfoStore.getState().clearServerInfo();
+    // serverInfoStore is NOT cleared here. Changing the URL is the
+    // "same server, different address" case — capabilities, server type,
+    // and version stay the same. The cached server-info remains valid;
+    // refreshing it would just cause a needless network round-trip and
+    // flicker on the Server Information card.
     setServerUrlSaved(true);
     setTimeout(() => setServerUrlSheetVisible(false), 500);
   }, []);
+
+  /* ------------------------------------------------------------------ */
+  /*  Secondary URL editor                                                */
+  /* ------------------------------------------------------------------ */
+
+  const handleOpenSecondaryUrlSheet = useCallback(() => {
+    setSecondaryUrlInput(secondaryServerUrl ?? '');
+    setSecondaryUrlSaved(false);
+    setSecondaryUrlTest({ kind: 'idle' });
+    setSecondaryUrlSheetVisible(true);
+  }, [secondaryServerUrl]);
+
+  const handleSecondaryUrlInputChange = useCallback((next: string) => {
+    setSecondaryUrlInput(next);
+    setSecondaryUrlTest((prev) => (prev.kind === 'idle' ? prev : { kind: 'idle' }));
+  }, []);
+
+  const handleTestSecondaryUrl = useCallback(async () => {
+    const trimmed = secondaryUrlInput.trim();
+    if (!trimmed) return;
+    const auth = authStore.getState();
+    if (!auth.username || !auth.password) {
+      setSecondaryUrlTest({ kind: 'failed', error: t('connectionFailed') });
+      return;
+    }
+    const normalised = normalizeServerUrl(trimmed);
+    setSecondaryUrlTest({ kind: 'testing' });
+    const result = await login(normalised, auth.username, auth.password, auth.legacyAuth);
+    if (result.success) {
+      setSecondaryUrlTest({ kind: 'passed', testedUrl: normalised });
+    } else {
+      setSecondaryUrlTest({ kind: 'failed', error: result.error });
+    }
+  }, [secondaryUrlInput, t]);
+
+  const handleSaveSecondaryUrl = useCallback(() => {
+    if (secondaryUrlTest.kind !== 'passed') return;
+    authStore.getState().setSecondaryServerUrl(secondaryUrlTest.testedUrl);
+    setSecondaryUrlSaved(true);
+    setTimeout(() => setSecondaryUrlSheetVisible(false), 500);
+  }, [secondaryUrlTest]);
+
+  const handleRemoveSecondaryUrl = useCallback(async () => {
+    // If we're currently active on secondary, switch back to primary FIRST —
+    // otherwise we'd null out the URL backing serverUrl mid-stream.
+    if (activeServer === 'secondary') {
+      await switchToServer('primary', 'manual');
+    }
+    authStore.getState().setSecondaryServerUrl(null);
+    setSecondaryUrlSheetVisible(false);
+  }, [activeServer]);
 
   const handleSaveServerUrl = useCallback(() => {
     // Guard: Save is only reachable in `passed` state; defensive check
@@ -453,14 +518,36 @@ export function SettingsServerScreen() {
               pressed && settingsStyles.pressed,
             ]}
           >
-            <Text style={[styles.fieldLabel, { color: colors.textPrimary }]}>{t('serverUrl')}</Text>
+            <Text style={[styles.fieldLabel, { color: colors.textPrimary }]}>{t('primaryServerUrl')}</Text>
             <View style={styles.deviceNameValue}>
               <Text
                 style={[styles.fieldValue, { color: colors.textSecondary }]}
                 numberOfLines={1}
                 ellipsizeMode="middle"
               >
-                {serverUrl ?? '—'}
+                {primaryServerUrl ?? serverUrl ?? '—'}
+              </Text>
+              <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
+            </View>
+          </Pressable>
+          <Pressable
+            onPress={handleOpenSecondaryUrlSheet}
+            style={({ pressed }) => [
+              styles.fieldRow,
+              { borderBottomColor: colors.border },
+              pressed && settingsStyles.pressed,
+            ]}
+          >
+            <Text style={[styles.fieldLabel, { color: colors.textPrimary }]}>
+              {t('secondaryServerUrl')}
+            </Text>
+            <View style={styles.deviceNameValue}>
+              <Text
+                style={[styles.fieldValue, { color: colors.textSecondary }]}
+                numberOfLines={1}
+                ellipsizeMode="middle"
+              >
+                {secondaryServerUrl ?? t('notSet')}
               </Text>
               <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
             </View>
@@ -757,6 +844,111 @@ export function SettingsServerScreen() {
         </View>
         <Pressable
           onPress={() => setServerUrlSheetVisible(false)}
+          style={styles.sheetCancelButton}
+        >
+          <Text style={[styles.sheetCancelButtonText, { color: colors.primary }]}>
+            {t('cancel')}
+          </Text>
+        </Pressable>
+      </View>
+    </BottomSheet>
+
+    {/* Secondary server URL editor — same Test → Save gate as the
+        primary editor. Saving secondary doesn't clearQueue / clearApiCache
+        / refetch capabilities because the secondary isn't active. */}
+    <BottomSheet visible={secondaryUrlSheetVisible} onClose={() => setSecondaryUrlSheetVisible(false)}>
+      <View style={styles.sheetHeader}>
+        <Text style={[styles.sheetTitle, { color: colors.textPrimary }]}>{t('secondaryServerUrl')}</Text>
+        <Text style={[styles.sheetHint, { color: colors.textSecondary }]}>
+          {t('secondaryServerUrlEditPrompt')}
+        </Text>
+      </View>
+      <View style={styles.sheetForm}>
+        <TextInput
+          style={[
+            styles.sheetInput,
+            { backgroundColor: colors.inputBg, color: colors.textPrimary, borderColor: colors.border },
+          ]}
+          placeholder="http://192.168.1.50:4040"
+          placeholderTextColor={colors.textSecondary}
+          value={secondaryUrlInput}
+          onChangeText={handleSecondaryUrlInputChange}
+          autoCapitalize="none"
+          autoCorrect={false}
+          keyboardType="url"
+          returnKeyType="go"
+          onSubmitEditing={handleTestSecondaryUrl}
+          autoFocus
+          editable={secondaryUrlTest.kind !== 'testing'}
+        />
+        {secondaryUrlTest.kind === 'passed' && (
+          <View style={styles.sheetTestStatus}>
+            <Ionicons name="checkmark-circle" size={18} color={colors.green ?? colors.primary} />
+            <Text style={[styles.sheetTestStatusText, { color: colors.textSecondary }]}>
+              {t('testPassed')}
+            </Text>
+          </View>
+        )}
+        {secondaryUrlTest.kind === 'failed' && (
+          <View style={styles.sheetTestStatus}>
+            <Ionicons name="close-circle" size={18} color={colors.red} />
+            <Text style={[styles.sheetTestStatusText, { color: colors.red }]} numberOfLines={3}>
+              {t('testFailed', { error: secondaryUrlTest.error })}
+            </Text>
+          </View>
+        )}
+        <View style={styles.sheetButtonRow}>
+          <Pressable
+            onPress={handleTestSecondaryUrl}
+            disabled={secondaryUrlTest.kind === 'testing' || !secondaryUrlInput.trim()}
+            style={({ pressed }) => [
+              styles.sheetSplitButton,
+              styles.sheetTestButton,
+              { borderColor: colors.primary },
+              pressed && styles.sheetButtonPressed,
+              (secondaryUrlTest.kind === 'testing' || !secondaryUrlInput.trim()) && styles.sheetButtonDisabled,
+            ]}
+          >
+            {secondaryUrlTest.kind === 'testing' ? (
+              <ActivityIndicator size="small" color={colors.primary} />
+            ) : (
+              <Ionicons name="flask-outline" size={18} color={colors.primary} />
+            )}
+            <Text style={[styles.sheetSplitButtonText, { color: colors.primary }]}>
+              {secondaryUrlTest.kind === 'testing' ? t('testing') : t('testServer')}
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={handleSaveSecondaryUrl}
+            disabled={secondaryUrlTest.kind !== 'passed'}
+            style={({ pressed }) => [
+              styles.sheetSplitButton,
+              { backgroundColor: colors.primary },
+              pressed && styles.sheetButtonPressed,
+              secondaryUrlTest.kind !== 'passed' && styles.sheetButtonDisabled,
+            ]}
+          >
+            <Ionicons name="checkmark" size={18} color="#fff" />
+            <Text style={[styles.sheetSplitButtonText, { color: '#fff' }]}>
+              {secondaryUrlSaved ? t('saved') : t('save')}
+            </Text>
+          </Pressable>
+        </View>
+        {secondaryServerUrl != null && (
+          <Pressable
+            onPress={handleRemoveSecondaryUrl}
+            style={({ pressed }) => [
+              styles.sheetCancelButton,
+              pressed && styles.sheetButtonPressed,
+            ]}
+          >
+            <Text style={[styles.sheetCancelButtonText, { color: colors.red }]}>
+              {t('removeSecondaryServerUrl')}
+            </Text>
+          </Pressable>
+        )}
+        <Pressable
+          onPress={() => setSecondaryUrlSheetVisible(false)}
           style={styles.sheetCancelButton}
         >
           <Text style={[styles.sheetCancelButtonText, { color: colors.primary }]}>
