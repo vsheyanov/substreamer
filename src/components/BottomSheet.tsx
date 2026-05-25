@@ -87,17 +87,23 @@ export function BottomSheet({
 
   /**
    * Fire onCloseComplete after the Modal's native window manager has had
-   * time to actually dismiss. Two RAFs is the smallest deterministic
-   * wait that lets React commit the unmount AND lets Android finish
-   * tearing down the dialog window before a second Modal opens on top.
-   * Without this the second Modal opens while Android still owns the
-   * touch surface from the first, swallowing taps on the new dialog.
+   * time to actually dismiss. Sequence:
+   *   1. requestAnimationFrame — wait for React to commit the unmount
+   *      (the parent already set internalVisible=false; the RAF tick
+   *      happens after the next render phase).
+   *   2. setTimeout(100) — wait a deterministic 100ms for Android's
+   *      window manager to release the dialog window. setTimeout is
+   *      used here (not a second RAF) because RAFs on RN-0.85 / Fabric
+   *      are gated on native VSYNC + JS-thread availability; with no
+   *      pending animation the inner RAF can sit waiting for a frame
+   *      that never arrives, which hangs every awaiter on hideAndAwait.
+   *      setTimeout fires regardless of render activity.
    */
   const scheduleCloseComplete = useCallback(() => {
     requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
+      setTimeout(() => {
         onCloseCompleteRef.current?.();
-      });
+      }, 100);
     });
   }, []);
 

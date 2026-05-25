@@ -53,6 +53,17 @@ export interface MoreOptionsState {
 // trigger spurious re-renders for subscribers of the store object.
 const closeCompleteResolvers: Array<() => void> = [];
 
+// Belt-and-braces fallback for `hideAndAwait`. The BottomSheet's
+// scheduleCloseComplete chain (RAF + 100ms setTimeout) normally fires
+// onCloseComplete within ~120ms of visible→false. If it doesn't — RAF
+// stalled with no rendering activity, ref cleared by an unmount race,
+// any other edge — the caller would hang forever and every chained
+// modal would silently no-op. This timeout guarantees we resolve within
+// SAFETY_TIMEOUT_MS so the next sheet still opens. The cost on the
+// happy path is zero (the close-complete signal removes the resolver
+// from the array before the timeout fires, making the timeout a no-op).
+const SAFETY_TIMEOUT_MS = 500;
+
 export const moreOptionsStore = create<MoreOptionsState>()((set) => ({
   visible: false,
   entity: null,
@@ -66,6 +77,13 @@ export const moreOptionsStore = create<MoreOptionsState>()((set) => ({
     set({ visible: false, entity: null, source: 'default' });
     return new Promise<void>((resolve) => {
       closeCompleteResolvers.push(resolve);
+      setTimeout(() => {
+        const idx = closeCompleteResolvers.indexOf(resolve);
+        if (idx >= 0) {
+          closeCompleteResolvers.splice(idx, 1);
+          resolve();
+        }
+      }, SAFETY_TIMEOUT_MS);
     });
   },
 

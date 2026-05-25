@@ -30,6 +30,7 @@ LogBox.ignoreLogs([
 ]);
 
 import { AddToPlaylistSheet } from '../components/AddToPlaylistSheet';
+import { ThemedAlertHost } from '../components/ThemedAlertHost';
 import { DARK_MIX, GRADIENT_LOCATIONS, GRADIENT_MIX_CURVE, GradientBackground, LIGHT_MIX } from '../components/GradientBackground';
 import { mixHexColors } from '../utils/colors';
 import AnimatedSplashScreen from '../components/AnimatedSplashScreen';
@@ -742,6 +743,12 @@ export default function RootLayout() {
 
       {/* Global sleep timer sheet driven by sleepTimerStore */}
       <SleepTimerSheet />
+
+      {/* Global themed alert host driven by themedAlertStore — decouples
+          alert Modal lifecycle from any caller's React subtree so chained
+          opens (e.g. after closing MoreOptionsSheet's BottomSheet on
+          Android) don't race the previous Modal's native dismiss. */}
+      <ThemedAlertHost />
 
       {/* Global SSL certificate prompt driven by certPromptStore */}
       <CertificatePromptModal

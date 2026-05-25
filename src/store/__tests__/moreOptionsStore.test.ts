@@ -82,5 +82,47 @@ describe('moreOptionsStore', () => {
     it('a signal with no waiters is a no-op', () => {
       expect(() => moreOptionsStore.getState()._signalCloseComplete()).not.toThrow();
     });
+
+    it('hideAndAwait safety-net resolves even if _signalCloseComplete never fires', async () => {
+      jest.useFakeTimers();
+      try {
+        const promise = moreOptionsStore.getState().hideAndAwait();
+        let resolved = false;
+        promise.then(() => { resolved = true; });
+
+        // Without the signal: simulate the bug path where RAF stalls and
+        // _signalCloseComplete never gets called. The safety-net setTimeout
+        // (500ms) should fire and resolve the promise anyway.
+        await Promise.resolve();
+        expect(resolved).toBe(false);
+
+        jest.advanceTimersByTime(500);
+        await Promise.resolve();
+        expect(resolved).toBe(true);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('safety-net does not double-resolve when signal fires normally', async () => {
+      jest.useFakeTimers();
+      try {
+        const promise = moreOptionsStore.getState().hideAndAwait();
+        const resolveSpy = jest.fn();
+        promise.then(resolveSpy);
+
+        // Signal fires first (normal path).
+        moreOptionsStore.getState()._signalCloseComplete();
+        await Promise.resolve();
+        expect(resolveSpy).toHaveBeenCalledTimes(1);
+
+        // Safety-net fires later — should be a no-op (resolver already removed).
+        jest.advanceTimersByTime(500);
+        await Promise.resolve();
+        expect(resolveSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
   });
 });

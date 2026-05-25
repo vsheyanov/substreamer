@@ -281,14 +281,12 @@ describe('BottomSheet', () => {
       </BottomSheet>,
     );
 
-    // Flush the RAF chain that schedules onCloseComplete (programmatic
-    // close path) + the inner double-RAF that waits for native teardown.
-    // RN polyfills RAF as setTimeout in jest, so three macrotask ticks
-    // covers outer RAF + double RAF.
+    // Flush the close-complete schedule: outer RAF that defers the
+    // unmount, then RAF + 100ms setTimeout inside scheduleCloseComplete.
+    // RN polyfills RAF as setTimeout(_, ~16ms) in jest, so a single
+    // real-timer wait > 150ms covers the chain.
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 200));
     });
 
     expect(onCloseComplete).toHaveBeenCalled();
@@ -306,9 +304,10 @@ describe('BottomSheet', () => {
       fireEvent.press(getByTestId('bottom-sheet-backdrop'));
     });
 
+    // Backdrop press triggers the exit animation (~250ms) which then
+    // calls scheduleCloseComplete (RAF + 100ms). Wait > 400ms to cover.
     await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 450));
     });
 
     expect(onCloseComplete).toHaveBeenCalled();

@@ -1,8 +1,9 @@
 import { Alert, Platform } from 'react-native';
-import { useCallback, useState } from 'react';
+import { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useTheme } from './useTheme';
+import { themedAlertStore } from '../store/themedAlertStore';
 
 interface AlertButton {
   text: string;
@@ -10,36 +11,26 @@ interface AlertButton {
   onPress?: () => void;
 }
 
-interface AlertState {
-  visible: boolean;
-  title: string;
-  message?: string;
-  buttons: AlertButton[];
-}
-
 /**
  * Platform-aware alert hook.
  *
- * - iOS: delegates to the native Alert.alert (respects system dark mode).
- * - Android: renders a ThemedAlert modal styled with the app's theme.
+ * - iOS: delegates to the native `Alert.alert` (respects system dark mode).
+ * - Android: routes through the global `themedAlertStore` so the alert
+ *   Modal mounts at the root layout (via `ThemedAlertHost`), independent
+ *   of whatever component triggered it. This avoids Android Modal
+ *   handoff races when an alert is opened immediately after another
+ *   Modal closes (e.g. MoreOptionsSheet → Delete Playlist confirm).
  *
  * Returns `{ alert, alertProps }`:
  * - `alert(title, message?, buttons?)` — show the dialog
- * - `alertProps` — spread onto `<ThemedAlert {...alertProps} />` in the component tree
+ * - `alertProps` — DEPRECATED. Kept as an always-invisible no-op so
+ *   existing `<ThemedAlert {...alertProps} />` renders compile without
+ *   warning. New code shouldn't render its own ThemedAlert; the global
+ *   host handles every alert. Local renders can be removed in cleanup.
  */
 export function useThemedAlert() {
   const { colors } = useTheme();
   const { t } = useTranslation();
-  const [state, setState] = useState<AlertState>({
-    visible: false,
-    title: '',
-    message: undefined,
-    buttons: [],
-  });
-
-  const dismiss = useCallback(() => {
-    setState((s) => ({ ...s, visible: false }));
-  }, []);
 
   const alert = useCallback(
     (title: string, message?: string, buttons?: AlertButton[]) => {
@@ -50,24 +41,21 @@ export function useThemedAlert() {
         return;
       }
 
-      setState({
-        visible: true,
-        title,
-        message,
-        buttons: resolvedButtons,
-      });
+      themedAlertStore.getState().show(title, message, resolvedButtons);
     },
-    [],
+    [t],
   );
 
   return {
     alert,
+    // No-op compat surface. Spreads `visible: false` so any leftover
+    // `<ThemedAlert {...alertProps} />` render is harmless.
     alertProps: {
-      visible: state.visible,
-      title: state.title,
-      message: state.message,
-      buttons: state.buttons,
-      onDismiss: dismiss,
+      visible: false,
+      title: '',
+      message: undefined,
+      buttons: [],
+      onDismiss: () => {},
       colors,
     },
   };
