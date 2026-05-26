@@ -28,7 +28,10 @@ export function DropdownRow<T extends string | number | null>({
   onChange,
   isLast = false,
 }: {
-  label: string;
+  /** Left-side row label. Omit when the dropdown's section title already
+   *  provides the label (e.g. appearance dropdowns) — in that case the
+   *  current selection's label renders on the left instead. */
+  label?: string;
   value: T;
   options: ReadonlyArray<DropdownOption<T>>;
   onChange: (value: T) => void;
@@ -38,6 +41,7 @@ export function DropdownRow<T extends string | number | null>({
   const { colors } = useTheme();
   const [open, setOpen] = useState(false);
   const current = options.find((o) => o.value === value);
+  const currentLabel = current?.label ?? '';
 
   return (
     <>
@@ -52,17 +56,32 @@ export function DropdownRow<T extends string | number | null>({
           pressed && settingsStyles.pressed,
         ]}
       >
-        <Text style={[styles.label, { color: colors.textPrimary }]}>{label}</Text>
-        <View style={styles.right}>
-          <Text style={[styles.label, { color: colors.textSecondary }]} numberOfLines={1}>
-            {current?.label ?? ''}
-          </Text>
-          <Ionicons
-            name={open ? 'chevron-up' : 'chevron-down'}
-            size={20}
-            color={colors.textSecondary}
-          />
-        </View>
+        {label != null ? (
+          <>
+            <Text style={[styles.label, { color: colors.textPrimary }]}>{label}</Text>
+            <View style={styles.right}>
+              <Text style={[styles.label, { color: colors.textSecondary }]} numberOfLines={1}>
+                {currentLabel}
+              </Text>
+              <Ionicons
+                name={open ? 'chevron-up' : 'chevron-down'}
+                size={20}
+                color={colors.textSecondary}
+              />
+            </View>
+          </>
+        ) : (
+          <>
+            <Text style={[styles.label, { color: colors.textPrimary }]} numberOfLines={1}>
+              {currentLabel}
+            </Text>
+            <Ionicons
+              name={open ? 'chevron-up' : 'chevron-down'}
+              size={20}
+              color={colors.textSecondary}
+            />
+          </>
+        )}
       </Pressable>
       {open && (
         <View style={[styles.optionList, { borderTopColor: colors.border }]}>
