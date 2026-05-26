@@ -1,0 +1,587 @@
+import Ionicons from '@react-native-vector-icons/ionicons/static';
+import NetInfo from '@react-native-community/netinfo';
+import { useNavigation } from 'expo-router';
+import { useCallback, useEffect, useState } from 'react';
+import { Alert, Modal, Platform, Pressable, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { useTranslation } from 'react-i18next';
+
+import { useTheme } from '../../hooks/useTheme';
+import { useThemedAlert } from '../../hooks/useThemedAlert';
+import { settingsStyles } from '../../styles/settingsStyles';
+import {
+  checkLocationPermission,
+  getCurrentSSIDWithRetry,
+  openAppSettings,
+  requestLocationPermission,
+} from '../../services/autoOfflineService';
+import { autoOfflineStore, type AutoOfflineMode } from '../../store/autoOfflineStore';
+import { offlineModeStore } from '../../store/offlineModeStore';
+import { SettingsSectionTitle } from './SettingsSectionTitle';
+
+export function OfflineCard() {
+  const { t } = useTranslation();
+  const { colors } = useTheme();
+  const { alert } = useThemedAlert();
+  const navigation = useNavigation();
+
+  const offlineMode = offlineModeStore((s) => s.offlineMode);
+  const toggleOfflineMode = offlineModeStore((s) => s.toggleOfflineMode);
+  const showInFilterBar = offlineModeStore((s) => s.showInFilterBar);
+  const setShowInFilterBar = offlineModeStore((s) => s.setShowInFilterBar);
+
+  const autoEnabled = autoOfflineStore((s) => s.enabled);
+  const autoMode = autoOfflineStore((s) => s.mode);
+  const homeSSIDs = autoOfflineStore((s) => s.homeSSIDs);
+  const locationGranted = autoOfflineStore((s) => s.locationPermissionGranted);
+
+  const [currentSSID, setCurrentSSID] = useState<string | null>(null);
+  const [ssidPromptVisible, setSsidPromptVisible] = useState(false);
+  const [ssidPromptValue, setSsidPromptValue] = useState('');
+  const [ssidEditTarget, setSsidEditTarget] = useState<string | null>(null);
+  const [ssidSetupValue, setSsidSetupValue] = useState('');
+  const [ssidReadFailed, setSsidReadFailed] = useState(false);
+  const [notOnWifi, setNotOnWifi] = useState(false);
+
+  useEffect(() => {
+    if (autoMode === 'home-wifi') {
+      checkLocationPermission().then(async (granted) => {
+        const state = await NetInfo.refresh();
+        if (state.type !== 'wifi') {
+          setCurrentSSID(null);
+          setSsidReadFailed(false);
+          setNotOnWifi(true);
+          return;
+        }
+        setNotOnWifi(false);
+        const ssid = await getCurrentSSIDWithRetry();
+        setCurrentSSID(ssid);
+        setSsidReadFailed(granted && ssid == null);
+      });
+    }
+  }, [autoMode]);
+
+  useEffect(() => {
+    if (currentSSID && homeSSIDs.length === 0) {
+      setSsidSetupValue(currentSSID);
+    }
+  }, [currentSSID, homeSSIDs.length]);
+
+  // Prompt to disable auto-offline when navigating away with incomplete home-wifi setup
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('beforeRemove', (e: any) => {
+      const { enabled, mode, homeSSIDs: ssids, locationPermissionGranted: permGranted } = autoOfflineStore.getState();
+      if (!enabled || mode !== 'home-wifi') return;
+      if (permGranted && ssids.length > 0) return;
+
+      e.preventDefault();
+      Alert.alert(
+        t('incompleteSetup'),
+        t('incompleteSetupMessage'),
+        [
+          {
+            text: t('keepEnabled'),
+            style: 'cancel',
+            onPress: () => navigation.dispatch(e.data.action),
+          },
+          {
+            text: t('disable'),
+            style: 'destructive',
+            onPress: () => {
+              autoOfflineStore.getState().setEnabled(false);
+              navigation.dispatch(e.data.action);
+            },
+          },
+        ],
+      );
+    });
+    return unsubscribe;
+  }, [navigation, t]);
+
+  const handleAutoEnabledChange = useCallback((value: boolean) => {
+    autoOfflineStore.getState().setEnabled(value);
+  }, []);
+
+  const handleModeSelect = useCallback((mode: AutoOfflineMode) => {
+    autoOfflineStore.getState().setMode(mode);
+    if (mode === 'home-wifi') {
+      checkLocationPermission().then(async (granted) => {
+        const state = await NetInfo.refresh();
+        if (state.type !== 'wifi') {
+          setCurrentSSID(null);
+          setSsidReadFailed(false);
+          setNotOnWifi(true);
+          return;
+        }
+        setNotOnWifi(false);
+        const ssid = await getCurrentSSIDWithRetry();
+        setCurrentSSID(ssid);
+        setSsidReadFailed(granted && ssid == null);
+      });
+    }
+  }, []);
+
+  const handleGrantPermission = useCallback(async () => {
+    const granted = await requestLocationPermission();
+    if (granted) {
+      const state = await NetInfo.refresh();
+      if (state.type !== 'wifi') {
+        setCurrentSSID(null);
+        setSsidReadFailed(false);
+        setNotOnWifi(true);
+        return;
+      }
+      setNotOnWifi(false);
+      const ssid = await getCurrentSSIDWithRetry();
+      setCurrentSSID(ssid);
+      setSsidReadFailed(ssid == null);
+    } else {
+      openAppSettings();
+    }
+  }, []);
+
+  const handleRetrySSID = useCallback(async () => {
+    const state = await NetInfo.refresh();
+    if (state.type !== 'wifi') {
+      setCurrentSSID(null);
+      setSsidReadFailed(false);
+      setNotOnWifi(true);
+      return;
+    }
+    setNotOnWifi(false);
+    const ssid = await getCurrentSSIDWithRetry();
+    setCurrentSSID(ssid);
+    setSsidReadFailed(ssid == null);
+  }, []);
+
+  const handleAddCurrentSSID = useCallback(() => {
+    if (currentSSID) {
+      autoOfflineStore.getState().addSSID(currentSSID);
+    }
+  }, [currentSSID]);
+
+  const handleSetupAdd = useCallback(() => {
+    const trimmed = ssidSetupValue.trim();
+    if (trimmed) {
+      autoOfflineStore.getState().addSSID(trimmed);
+      setSsidSetupValue('');
+    }
+  }, [ssidSetupValue]);
+
+  const handleAddSSIDManual = useCallback(() => {
+    const defaultValue = currentSSID && !homeSSIDs.includes(currentSSID) ? currentSSID : '';
+    if (Platform.OS === 'ios') {
+      Alert.prompt(t('addNetwork'), t('enterWifiName'), [
+        { text: t('cancel'), style: 'cancel' },
+        {
+          text: t('add'),
+          onPress: (value?: string) => {
+            const trimmed = value?.trim();
+            if (trimmed) autoOfflineStore.getState().addSSID(trimmed);
+          },
+        },
+      ], 'plain-text', defaultValue);
+    } else {
+      setSsidEditTarget(null);
+      setSsidPromptValue(defaultValue);
+      setSsidPromptVisible(true);
+    }
+  }, [currentSSID, homeSSIDs, t]);
+
+  const handleEditSSID = useCallback((ssid: string) => {
+    if (Platform.OS === 'ios') {
+      Alert.prompt(t('editNetwork'), t('updateWifiName'), [
+        { text: t('cancel'), style: 'cancel' },
+        {
+          text: t('save'),
+          onPress: (value?: string) => {
+            const trimmed = value?.trim();
+            if (trimmed) autoOfflineStore.getState().updateSSID(ssid, trimmed);
+          },
+        },
+      ], 'plain-text', ssid);
+    } else {
+      setSsidEditTarget(ssid);
+      setSsidPromptValue(ssid);
+      setSsidPromptVisible(true);
+    }
+  }, [t]);
+
+  const handleSsidPromptSubmit = useCallback(() => {
+    const trimmed = ssidPromptValue.trim();
+    if (!trimmed) {
+      setSsidPromptVisible(false);
+      return;
+    }
+    if (ssidEditTarget) {
+      autoOfflineStore.getState().updateSSID(ssidEditTarget, trimmed);
+    } else {
+      autoOfflineStore.getState().addSSID(trimmed);
+    }
+    setSsidPromptVisible(false);
+  }, [ssidPromptValue, ssidEditTarget]);
+
+  const handleRemoveSSID = useCallback((ssid: string) => {
+    alert(
+      t('removeNetwork'),
+      t('removeNetworkMessage', { ssid }),
+      [
+        { text: t('cancel'), style: 'cancel' },
+        {
+          text: t('remove'),
+          style: 'destructive',
+          onPress: () => autoOfflineStore.getState().removeSSID(ssid),
+        },
+      ],
+    );
+  }, [alert, t]);
+
+  const showCurrentSSIDRow =
+    autoMode === 'home-wifi' &&
+    locationGranted &&
+    currentSSID != null &&
+    !homeSSIDs.includes(currentSSID);
+
+  return (
+    <>
+      <View style={settingsStyles.section}>
+        <SettingsSectionTitle>{t('offline')}</SettingsSectionTitle>
+        <View style={[settingsStyles.card, settingsStyles.cardPadded, { backgroundColor: colors.card }]}>
+          <View style={[styles.toggleRow, { borderBottomColor: colors.border }]}>
+            <View style={styles.toggleTextWrap}>
+              <Text style={[styles.label, { color: colors.textPrimary }]}>{t('offlineMode')}</Text>
+              <Text style={[styles.toggleHint, { color: colors.textSecondary }]}>
+                {t('offlineModeHint')}
+              </Text>
+            </View>
+            <Switch
+              value={offlineMode}
+              onValueChange={toggleOfflineMode}
+              trackColor={{ false: colors.border, true: colors.primary }}
+            />
+          </View>
+          <View style={[styles.toggleRow, { borderBottomColor: colors.border }]}>
+            <View style={styles.toggleTextWrap}>
+              <Text style={[styles.label, { color: colors.textPrimary }]}>{t('showInFilterBar')}</Text>
+              <Text style={[styles.toggleHint, { color: colors.textSecondary }]}>
+                {t('showInFilterBarHint')}
+              </Text>
+            </View>
+            <Switch
+              value={showInFilterBar}
+              onValueChange={setShowInFilterBar}
+              trackColor={{ false: colors.border, true: colors.primary }}
+            />
+          </View>
+          <View style={[styles.toggleRow, autoEnabled ? { borderBottomColor: colors.border } : styles.toggleRowLast]}>
+            <View style={styles.toggleTextWrap}>
+              <Text style={[styles.label, { color: colors.textPrimary }]}>{t('autoOffline')}</Text>
+              <Text style={[styles.toggleHint, { color: colors.textSecondary }]}>
+                {t('autoOfflineHint')}
+              </Text>
+            </View>
+            <Switch
+              value={autoEnabled}
+              onValueChange={handleAutoEnabledChange}
+              trackColor={{ false: colors.border, true: colors.primary }}
+            />
+          </View>
+
+          {autoEnabled && (
+            <>
+              <Pressable
+                onPress={() => handleModeSelect('wifi-only')}
+                style={({ pressed }) => [
+                  styles.toggleRow,
+                  { borderBottomColor: colors.border },
+                  pressed && settingsStyles.pressed,
+                ]}
+              >
+                <View style={styles.toggleTextWrap}>
+                  <Text style={[styles.label, { color: colors.textPrimary }]}>{t('wifiOnly')}</Text>
+                  <Text style={[styles.toggleHint, { color: colors.textSecondary }]}>
+                    {t('wifiOnlyHint')}
+                  </Text>
+                </View>
+                {autoMode === 'wifi-only' && (
+                  <Ionicons name="checkmark-circle" size={22} color={colors.primary} />
+                )}
+              </Pressable>
+
+              <Pressable
+                onPress={() => handleModeSelect('home-wifi')}
+                style={({ pressed }) => [
+                  styles.toggleRow,
+                  autoMode !== 'home-wifi' || !locationGranted || ssidReadFailed ? styles.toggleRowLast : { borderBottomColor: colors.border },
+                  pressed && settingsStyles.pressed,
+                ]}
+              >
+                <View style={styles.toggleTextWrap}>
+                  <Text style={[styles.label, { color: colors.textPrimary }]}>{t('homeWifi')}</Text>
+                  <Text style={[styles.toggleHint, { color: colors.textSecondary }]}>
+                    {t('homeWifiHint')}
+                  </Text>
+                </View>
+                {autoMode === 'home-wifi' && (
+                  <Ionicons name="checkmark-circle" size={22} color={colors.primary} />
+                )}
+              </Pressable>
+
+              {autoMode === 'home-wifi' && !locationGranted && (
+                <View style={styles.permissionWarning}>
+                  <Ionicons name="warning-outline" size={20} color={colors.red} />
+                  <View style={styles.permissionWarningText}>
+                    <Text style={[styles.toggleHint, { color: colors.textSecondary }]}>
+                      {Platform.OS === 'ios'
+                        ? t('locationPermissionHintIos')
+                        : t('locationPermissionHintAndroid')}
+                    </Text>
+                    <Pressable
+                      onPress={handleGrantPermission}
+                      style={({ pressed }) => [pressed && settingsStyles.pressed]}
+                    >
+                      <Text style={[styles.permissionButton, { color: colors.primary }]}>
+                        {t('grantPermission')}
+                      </Text>
+                    </Pressable>
+                  </View>
+                </View>
+              )}
+
+              {autoMode === 'home-wifi' && locationGranted && ssidReadFailed && (
+                <View style={styles.permissionWarning}>
+                  <Ionicons name="warning-outline" size={20} color={colors.red} />
+                  <View style={styles.permissionWarningText}>
+                    {homeSSIDs.length > 0 ? (
+                      <Text style={[styles.toggleHint, { color: colors.textSecondary }]}>
+                        {Platform.OS === 'ios'
+                          ? t('ssidReadFailedWithNetworksIos')
+                          : t('ssidReadFailedWithNetworksAndroid')}
+                      </Text>
+                    ) : (
+                      <Text style={[styles.toggleHint, { color: colors.textSecondary }]}>
+                        {t('ssidReadFailedNoNetworks')}
+                      </Text>
+                    )}
+                    <Pressable
+                      onPress={homeSSIDs.length > 0 ? handleGrantPermission : handleRetrySSID}
+                      style={({ pressed }) => [pressed && settingsStyles.pressed]}
+                    >
+                      <Text style={[styles.permissionButton, { color: colors.primary }]}>
+                        {homeSSIDs.length > 0 ? t('grantPermission') : t('tryAgain')}
+                      </Text>
+                    </Pressable>
+                  </View>
+                </View>
+              )}
+
+              {autoMode === 'home-wifi' && locationGranted && !ssidReadFailed && notOnWifi && (
+                <View style={styles.permissionWarning}>
+                  <Ionicons name="wifi-outline" size={20} color={colors.textSecondary} />
+                  <View style={styles.permissionWarningText}>
+                    <Text style={[styles.toggleHint, { color: colors.textSecondary }]}>
+                      {homeSSIDs.length === 0 ? t('connectToWifiWithManualHint') : t('connectToWifi')}
+                    </Text>
+                  </View>
+                </View>
+              )}
+
+              {showCurrentSSIDRow && !ssidReadFailed && (
+                <View style={[styles.ssidRow, { borderBottomColor: colors.border }]}>
+                  <Ionicons name="wifi" size={18} color={colors.primary} />
+                  <Text style={[styles.ssidText, { color: colors.textPrimary }]} numberOfLines={1}>
+                    {currentSSID}
+                  </Text>
+                  <Pressable
+                    onPress={handleAddCurrentSSID}
+                    hitSlop={8}
+                    style={({ pressed }) => [pressed && settingsStyles.pressed]}
+                  >
+                    <Text style={[styles.ssidActionText, { color: colors.primary }]}>{t('add')}</Text>
+                  </Pressable>
+                </View>
+              )}
+
+              {autoMode === 'home-wifi' && locationGranted && !ssidReadFailed && homeSSIDs.length > 0 && homeSSIDs.map((ssid, index) => (
+                <View
+                  key={ssid}
+                  style={[
+                    styles.ssidRow,
+                    index < homeSSIDs.length - 1 && {
+                      borderBottomWidth: StyleSheet.hairlineWidth,
+                      borderBottomColor: colors.border,
+                    },
+                  ]}
+                >
+                  <Ionicons name="wifi" size={18} color={colors.textSecondary} />
+                  <Text style={[styles.ssidText, { color: colors.textPrimary }]} numberOfLines={1}>
+                    {ssid}
+                  </Text>
+                  <View style={styles.ssidActions}>
+                    <Pressable
+                      onPress={() => handleEditSSID(ssid)}
+                      hitSlop={8}
+                      style={({ pressed }) => [pressed && settingsStyles.pressed]}
+                    >
+                      <Ionicons name="pencil" size={18} color={colors.textSecondary} />
+                    </Pressable>
+                    <Pressable
+                      onPress={() => handleRemoveSSID(ssid)}
+                      hitSlop={8}
+                      style={({ pressed }) => [pressed && settingsStyles.pressed]}
+                    >
+                      <Ionicons name="close-circle-outline" size={20} color={colors.red} />
+                    </Pressable>
+                  </View>
+                </View>
+              ))}
+
+              {autoMode === 'home-wifi' && locationGranted && !ssidReadFailed && (
+                <Pressable
+                  onPress={handleAddSSIDManual}
+                  style={({ pressed }) => [styles.addSsidRow, pressed && settingsStyles.pressed]}
+                >
+                  <Ionicons name="add-circle-outline" size={20} color={colors.primary} />
+                  <Text style={[styles.addSsidText, { color: colors.primary }]}>{t('addNetwork')}</Text>
+                </Pressable>
+              )}
+
+              {autoMode === 'home-wifi' && homeSSIDs.length === 0 && locationGranted && currentSSID != null && (
+                <View style={[styles.setupArea, { borderBottomColor: colors.border }]}>
+                  <View style={styles.setupHeader}>
+                    <Ionicons name="wifi" size={18} color={colors.primary} />
+                    <Text style={[styles.toggleHint, { color: colors.textSecondary }]}>
+                      {t('currentNetworkDetected')}
+                    </Text>
+                  </View>
+                  <View style={styles.setupRow}>
+                    <TextInput
+                      style={[styles.setupInput, { color: colors.textPrimary, backgroundColor: colors.inputBg, borderColor: colors.border }]}
+                      value={ssidSetupValue}
+                      onChangeText={setSsidSetupValue}
+                      placeholder={t('wifiNetworkName')}
+                      placeholderTextColor={colors.textSecondary}
+                      onSubmitEditing={handleSetupAdd}
+                      returnKeyType="done"
+                    />
+                    <Pressable
+                      onPress={handleSetupAdd}
+                      hitSlop={8}
+                      style={({ pressed }) => [pressed && settingsStyles.pressed]}
+                    >
+                      <Text style={[styles.ssidActionText, { color: colors.primary }]}>{t('add')}</Text>
+                    </Pressable>
+                  </View>
+                  <Text style={[styles.setupHint, { color: colors.textSecondary }]}>
+                    {t('verifyNameHint')}
+                  </Text>
+                </View>
+              )}
+            </>
+          )}
+        </View>
+      </View>
+
+      {/* Android SSID prompt modal */}
+      <Modal
+        visible={ssidPromptVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSsidPromptVisible(false)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => setSsidPromptVisible(false)}>
+          <Pressable style={[styles.modalCard, { backgroundColor: colors.card }]} onPress={() => {}}>
+            <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>
+              {ssidEditTarget ? t('editNetwork') : t('addNetwork')}
+            </Text>
+            <TextInput
+              style={[styles.modalInput, { color: colors.textPrimary, backgroundColor: colors.inputBg, borderColor: colors.border }]}
+              value={ssidPromptValue}
+              onChangeText={setSsidPromptValue}
+              placeholder={t('wifiNetworkName')}
+              placeholderTextColor={colors.textSecondary}
+              autoFocus
+              onSubmitEditing={handleSsidPromptSubmit}
+            />
+            <View style={styles.modalButtons}>
+              <Pressable
+                onPress={() => setSsidPromptVisible(false)}
+                style={({ pressed }) => [styles.modalButton, pressed && settingsStyles.pressed]}
+              >
+                <Text style={[styles.modalButtonText, { color: colors.textSecondary }]}>{t('cancel')}</Text>
+              </Pressable>
+              <Pressable
+                onPress={handleSsidPromptSubmit}
+                style={({ pressed }) => [styles.modalButton, pressed && settingsStyles.pressed]}
+              >
+                <Text style={[styles.modalButtonText, { color: colors.primary }]}>
+                  {ssidEditTarget ? t('save') : t('add')}
+                </Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+    </>
+  );
+}
+
+const styles = StyleSheet.create({
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  toggleRowLast: { borderBottomWidth: 0 },
+  toggleTextWrap: { flex: 1, marginRight: 12 },
+  label: { fontSize: 16, fontWeight: '500' },
+  toggleHint: { fontSize: 12, marginTop: 4, lineHeight: 16 },
+  permissionWarning: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  permissionWarningText: { flex: 1 },
+  permissionButton: { fontSize: 14, fontWeight: '600', marginTop: 8 },
+  ssidRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  ssidText: { flex: 1, fontSize: 16 },
+  ssidActionText: { fontSize: 16, fontWeight: '600' },
+  ssidActions: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  setupArea: {
+    paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  setupHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 },
+  setupRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  setupInput: { flex: 1, fontSize: 16, borderWidth: 1, borderRadius: 8, padding: 10 },
+  setupHint: { fontSize: 12, marginTop: 6 },
+  addSsidRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 12 },
+  addSsidText: { fontSize: 16, fontWeight: '500' },
+  modalBackdrop: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.5)',
+  },
+  modalCard: { width: '80%', borderRadius: 14, padding: 20 },
+  modalTitle: { fontSize: 16, fontWeight: '600', marginBottom: 16 },
+  modalInput: {
+    fontSize: 16,
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 16,
+  },
+  modalButtons: { flexDirection: 'row', justifyContent: 'flex-end', gap: 16 },
+  modalButton: { paddingVertical: 6, paddingHorizontal: 4 },
+  modalButtonText: { fontSize: 16, fontWeight: '600' },
+});
