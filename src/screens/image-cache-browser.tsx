@@ -29,7 +29,7 @@ import { useThemedAlert } from '../hooks/useThemedAlert';
 import {
   clearImageCache,
   deleteCachedImage,
-  listCachedImagesAsync,
+  listCachedImages,
   refreshCoverArt,
   type CachedImageEntry,
 } from '../services/imageCacheService';
@@ -237,7 +237,7 @@ export function ImageCacheBrowserScreen() {
     // Fetch the full list once — 'all' returns every row, and the
     // complete/incomplete filter is applied in JS above. This keeps
     // segment-toggles responsive even at tens of thousands of rows.
-    listCachedImagesAsync('all').then((result) => {
+    listCachedImages('all').then((result) => {
       if (!cancelled) {
         setAllEntries(result);
         setLoading(false);
@@ -250,7 +250,7 @@ export function ImageCacheBrowserScreen() {
 
   const handlePullRefresh = useCallback(async () => {
     setRefreshing(true);
-    const result = await listCachedImagesAsync('all');
+    const result = await listCachedImages('all');
     setAllEntries(result);
     setRefreshing(false);
   }, []);
@@ -263,7 +263,7 @@ export function ImageCacheBrowserScreen() {
     (coverArtId: string) => {
       setItemStatus(coverArtId, 'refreshing');
       refreshCoverArt(coverArtId, 'browser')
-        .then(() => listCachedImagesAsync('all'))
+        .then(() => listCachedImages('all'))
         .then((result) => {
           // If the row purged itself during refresh (404, gated 5xx, or
           // exhausted variant retries), it's gone from the list. Show the

@@ -21,9 +21,7 @@ import {
   hydrateImageDownloadQueue,
 } from './persistence/imageDownloadQueueTable';
 import {
-  getImageQueueCycle,
-  getImageQueueCycleProgress,
-  isImageQueuePaused,
+  getImageQueueState,
   subscribeImageQueueChanges,
 } from '../services/imageCacheService';
 
@@ -53,29 +51,27 @@ export const imageDownloadQueueStore = create<ImageDownloadQueueState>()((set) =
 
   hydrateFromDb: () => {
     const queue = hydrateImageDownloadQueue();
-    const cycle = getImageQueueCycle();
-    const progress = getImageQueueCycleProgress();
+    const s = getImageQueueState();
     set({
       queue,
-      cycleId: cycle.cycleId,
-      cycleScope: cycle.cycleScope,
-      cycleTotal: cycle.cycleTotal,
-      cycleProcessed: progress.processed,
-      cycleFailed: progress.failed,
-      isPaused: isImageQueuePaused(),
+      cycleId: s.cycleId,
+      cycleScope: s.cycleScope,
+      cycleTotal: s.cycleTotal,
+      cycleProcessed: s.processed,
+      cycleFailed: s.failed,
+      isPaused: s.isPaused,
     });
   },
 
   refreshProgress: () => {
-    const cycle = getImageQueueCycle();
-    const progress = getImageQueueCycleProgress();
+    const s = getImageQueueState();
     set({
-      cycleId: cycle.cycleId,
-      cycleScope: cycle.cycleScope,
-      cycleTotal: cycle.cycleTotal,
-      cycleProcessed: progress.processed,
-      cycleFailed: progress.failed,
-      isPaused: isImageQueuePaused(),
+      cycleId: s.cycleId,
+      cycleScope: s.cycleScope,
+      cycleTotal: s.cycleTotal,
+      cycleProcessed: s.processed,
+      cycleFailed: s.failed,
+      isPaused: s.isPaused,
     });
   },
 }));

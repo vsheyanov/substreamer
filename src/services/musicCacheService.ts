@@ -1727,7 +1727,7 @@ export function syncCachedItemTracks(
   // `ensureCached` and `prefetchCoverArt` are idempotent — instant
   // no-op when every variant is already on disk (imageCacheService.ts:447),
   // refills only what's missing (e.g. a variant dropped by the
-  // reconcileImageCacheAsync zero-byte pass, or an OS cache eviction).
+  // reconcileImageCache zero-byte pass, or an OS cache eviction).
   // This check never walks the full library — only this single cached
   // item and its tracks.
   if (cached.coverArtId) {

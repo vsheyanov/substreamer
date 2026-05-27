@@ -221,7 +221,7 @@ async function runDeferredStartup(getCancelled: () => boolean): Promise<void> {
   if (getCancelled()) return;
 
   // imageCacheStore aggregates come from SQL now (via `rehydrateAllStores`
-  // at splash and `reconcileImageCacheAsync` inside `deferredImageCacheInit`),
+  // at splash and `reconcileImageCache` inside `deferredImageCacheInit`),
   // so the one-time recalculate-from-stats call is gone.
   await stage('musicCacheStats', async () => {
     musicCacheStore.getState().recalculate(await getMusicCacheStats());

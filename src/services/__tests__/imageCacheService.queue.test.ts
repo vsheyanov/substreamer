@@ -216,9 +216,7 @@ import {
   __setImageDownloaderForTest,
   cancelImageRefreshCycle,
   enqueueImageRefreshCycle,
-  getImageQueueCycle,
-  getImageQueueCycleProgress,
-  isImageQueuePaused,
+  getImageQueueState,
   pauseImageQueue,
   processImageQueue,
   recoverStalledImageDownloads,
@@ -246,15 +244,14 @@ beforeEach(() => {
 });
 
 describe('image-queue meta accessors', () => {
-  it('isImageQueuePaused returns false when no meta is set', () => {
-    expect(isImageQueuePaused()).toBe(false);
-  });
-
-  it('getImageQueueCycle returns nulls when no cycle is active', () => {
-    expect(getImageQueueCycle()).toEqual({
+  it('getImageQueueState returns the empty shape when no cycle is active', () => {
+    expect(getImageQueueState()).toEqual({
       cycleId: null,
       cycleScope: null,
       cycleTotal: 0,
+      processed: 0,
+      failed: 0,
+      isPaused: false,
     });
   });
 });
@@ -279,7 +276,7 @@ describe('enqueueImageRefreshCycle', () => {
     const [ids, scope] = mockEnqueueBulk.mock.calls[0];
     expect(ids).toEqual(['a-1', 'pl-1', 'a-2']);
     expect(scope).toBe('refresh-downloads');
-    const meta = getImageQueueCycle();
+    const meta = getImageQueueState();
     expect(meta.cycleId).toBe(cycleId);
     expect(meta.cycleScope).toBe('refresh-downloads');
     expect(meta.cycleTotal).toBe(3);
@@ -325,7 +322,7 @@ describe('processImageQueue worker', () => {
 
     // Every row consumed; cycle metadata cleared.
     expect(mockQueueState.rows).toEqual([]);
-    expect(getImageQueueCycle().cycleId).toBeNull();
+    expect(getImageQueueState().cycleId).toBeNull();
     expect(mockMarkDownloading).toHaveBeenCalledTimes(2);
     expect(mockRemoveFromQueue).toHaveBeenCalledTimes(2);
   });
@@ -340,7 +337,7 @@ describe('processImageQueue worker', () => {
     expect(mockQueueState.rows).toHaveLength(1);
     expect(mockQueueState.rows[0].status).toBe('error');
     expect(mockMarkError).toHaveBeenCalledWith('cov-a', expect.stringContaining('Failed after retry'));
-    expect(getImageQueueCycle().cycleId).not.toBeNull();
+    expect(getImageQueueState().cycleId).not.toBeNull();
     // Retry-once-inline: 2 attempts per row
     expect(mockDownloader).toHaveBeenCalledTimes(2);
   });
@@ -404,16 +401,16 @@ describe('processImageQueue worker', () => {
 describe('pause / resume', () => {
   it('pauseImageQueue persists isPaused=true and resumeImageQueue clears it', () => {
     pauseImageQueue();
-    expect(isImageQueuePaused()).toBe(true);
+    expect(getImageQueueState().isPaused).toBe(true);
     resumeImageQueue();
-    expect(isImageQueuePaused()).toBe(false);
+    expect(getImageQueueState().isPaused).toBe(false);
   });
 
   it('pause survives a meta re-read (i.e., simulated app restart)', () => {
     pauseImageQueue();
     // Trigger a fresh read by clearing the in-process memo (the function
     // reads kvStorage every time, so this is implicit). Just call again.
-    expect(isImageQueuePaused()).toBe(true);
+    expect(getImageQueueState().isPaused).toBe(true);
   });
 });
 
@@ -426,7 +423,7 @@ describe('cancel', () => {
     cancelImageRefreshCycle();
 
     expect(mockQueueState.rows).toHaveLength(0);
-    expect(getImageQueueCycle().cycleId).toBeNull();
+    expect(getImageQueueState().cycleId).toBeNull();
   });
 
   it('is a no-op when no cycle is active', () => {
@@ -478,9 +475,12 @@ describe('recoverStalledImageDownloads', () => {
   });
 });
 
-describe('getImageQueueCycleProgress', () => {
+describe('getImageQueueState — progress derivation', () => {
   it('returns zeros when no cycle', () => {
-    expect(getImageQueueCycleProgress()).toEqual({ processed: 0, total: 0, failed: 0 });
+    const s = getImageQueueState();
+    expect(s.processed).toBe(0);
+    expect(s.cycleTotal).toBe(0);
+    expect(s.failed).toBe(0);
   });
 
   it('computes processed = total - (queued + downloading)', async () => {
@@ -493,9 +493,9 @@ describe('getImageQueueCycleProgress', () => {
     // Remove the "completed" rows
     mockQueueState.rows = mockQueueState.rows.slice(0, 2);
 
-    const progress = getImageQueueCycleProgress();
-    expect(progress.total).toBe(4);
-    expect(progress.processed).toBe(3); // total 4 minus 1 still-queued = 3 attempted
-    expect(progress.failed).toBe(1);
+    const s = getImageQueueState();
+    expect(s.cycleTotal).toBe(4);
+    expect(s.processed).toBe(3); // total 4 minus 1 still-queued = 3 attempted
+    expect(s.failed).toBe(1);
   });
 });

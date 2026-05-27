@@ -11,8 +11,8 @@ import {
   cancelImageRefreshCycle,
   enqueueImageRefreshCycle,
   pauseImageQueue,
-  reconcileImageCacheAsync,
-  repairIncompleteImagesAsync,
+  reconcileImageCache,
+  repairIncompleteImages,
   resumeImageQueue,
   retryFailedImages,
 } from '../../services/imageCacheService';
@@ -75,7 +75,7 @@ export function ImageCacheCard() {
     setImageScanning(true);
     const minShown = minDelay(1500);
     try {
-      await reconcileImageCacheAsync('settings');
+      await reconcileImageCache('settings');
     } finally {
       await minShown;
       setImageScanning(false);
@@ -88,7 +88,7 @@ export function ImageCacheCard() {
     processingOverlayStore.getState().show(t('repairingImages'));
     const minShown = minDelay(1500);
     try {
-      const outcome = await repairIncompleteImagesAsync('settings');
+      const outcome = await repairIncompleteImages('settings');
       if (outcome.queued === 0 && outcome.removed === 0) {
         processingOverlayStore.getState().showSuccess(t('imageRepairNothingToDo'));
       } else if (outcome.failed > 0) {

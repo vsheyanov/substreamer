@@ -372,7 +372,7 @@ export function initImageCache(): void {
               if (offlineModeStore.getState().offlineMode) return;
               await awaitFirstPing();
               if (offlineModeStore.getState().offlineMode) return;
-              await repairIncompleteImagesAsync('appstate-active');
+              await repairIncompleteImages('appstate-active');
             })(),
             'imageCache.appStateActive',
           );
@@ -403,10 +403,10 @@ export function teardownImageCache(): void {
  * once after the first React frame renders.
  *
  * Order matters:
- *   1. `reconcileImageCacheAsync` heals FS↔SQL drift before anything else
+ *   1. `reconcileImageCache` heals FS↔SQL drift before anything else
  *      reads cache state. Without it, orphan files or missing rows would
  *      confuse the incomplete-detection query.
- *   2. `repairIncompleteImagesAsync` sweeps stale `.tmp` files and
+ *   2. `repairIncompleteImages` sweeps stale `.tmp` files and
  *      re-queues any covers SQL now reports as incomplete.
  *
  * All filesystem work runs via expo-async-fs, keeping the JS thread free.
@@ -418,7 +418,7 @@ const RECONCILE_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000;
 /**
  * True when the last successful reconcile is missing or older than
  * RECONCILE_INTERVAL_MS. Only consulted by the deferred-init path —
- * user-initiated scans from Settings call `reconcileImageCacheAsync`
+ * user-initiated scans from Settings call `reconcileImageCache`
  * directly and bypass this check entirely.
  */
 function shouldRunReconcile(): boolean {
@@ -441,7 +441,7 @@ export function deferredImageCacheInit(): Promise<void> {
         sweepSentinelRows();
 
         if (shouldRunReconcile()) {
-          await reconcileImageCacheAsync('startup');
+          await reconcileImageCache('startup');
         }
 
         // Repair is non-blocking from here. The startup chain in
@@ -458,7 +458,7 @@ export function deferredImageCacheInit(): Promise<void> {
               // the wait. Belt-and-braces: isPurgeAllowedNow() also
               // checks per-failure inside the repair pass.
               if (offlineModeStore.getState().offlineMode) return;
-              await repairIncompleteImagesAsync('startup');
+              await repairIncompleteImages('startup');
             })(),
             'imageCache.startupRepair',
           );
@@ -503,7 +503,7 @@ offlineModeStore.subscribe((state, prev) => {
     (async () => {
       await awaitFirstPing();
       if (offlineModeStore.getState().offlineMode) return;
-      await repairIncompleteImagesAsync('offline-resume');
+      await repairIncompleteImages('offline-resume');
     })(),
     'imageCache.offlineResume',
   );
@@ -525,7 +525,7 @@ offlineModeStore.subscribe((state, prev) => {
  *     issue (cache dir mid-init, security-scoped URL failure), and
  *     wiping a correct DB to match a broken FS view would be worse.
  */
-export async function reconcileImageCacheAsync(source: string = 'auto'): Promise<void> {
+export async function reconcileImageCache(source: string = 'auto'): Promise<void> {
   const dir = ensureCacheDir();
   if (!dir.exists) {
     logImageCache(`reconcile abort source=${source} reason=cache-dir-missing`);
@@ -608,7 +608,7 @@ export async function reconcileImageCacheAsync(source: string = 'auto'): Promise
   } else if (isMassInsert) {
     // eslint-disable-next-line no-console
     console.warn(
-      `[reconcileImageCacheAsync] safety gate: ${newRows.length} would-be inserts ` +
+      `[reconcileImageCache] safety gate: ${newRows.length} would-be inserts ` +
         `vs ${preAggregate.fileCount} rows already present — skipping FS→SQL sync this run`,
     );
     logImageCache(
@@ -705,7 +705,7 @@ export interface RepairOutcome {
   removed: number;
 }
 
-export async function repairIncompleteImagesAsync(source: string = 'auto'): Promise<RepairOutcome> {
+export async function repairIncompleteImages(source: string = 'auto'): Promise<RepairOutcome> {
   logImageCache(`repair start source=${source}`);
   // 1. Sentinel sweep first — these should never have rows. Their count
   //    does NOT enter `queued` (which only covers the user-actionable
@@ -1182,7 +1182,7 @@ async function processNext(): Promise<void> {
 async function downloadAndCacheImage(coverArtId: string): Promise<void> {
   // Defensive — sentinels should never reach the pipeline. Callers
   // already filter via isSentinelCoverArtId() / CachedImage's mapping,
-  // but an external `repairIncompleteImagesAsync` could still hand us
+  // but an external `repairIncompleteImages` could still hand us
   // a stale row that slipped through.
   if (isSentinelCoverArtId(coverArtId)) {
     logImageCache(`downloadAndCacheImage id=${coverArtId} sentinel-skip`);
@@ -1523,7 +1523,7 @@ export interface CachedImageEntry {
  * File URIs are reconstructed from `(coverArtId, size, ext)` using the
  * same layout every code path writes to: `{image-cache}/{id}/{size}.{ext}`.
  */
-export async function listCachedImagesAsync(
+export async function listCachedImages(
   filter: CacheBrowserFilter = 'all',
 ): Promise<CachedImageEntry[]> {
   // URIs are deterministic from (dir.uri, coverArtId, size, ext), so build
@@ -1786,47 +1786,47 @@ function writeImageQueueMeta(next: ImageQueueMeta): void {
   }
 }
 
-export function isImageQueuePaused(): boolean {
-  return readImageQueueMeta().isPaused;
-}
-
-export function getImageQueueCycle(): {
+export interface ImageQueueState {
   cycleId: string | null;
   cycleScope: ImageDownloadQueueScope | null;
   cycleTotal: number;
-} {
-  const meta = readImageQueueMeta();
-  return { cycleId: meta.cycleId, cycleScope: meta.cycleScope, cycleTotal: meta.cycleTotal };
+  processed: number;
+  failed: number;
+  isPaused: boolean;
 }
 
 /**
- * Compute the cycle's "X / Y" progress on demand from SQL. Anything not
- * 'queued' OR 'downloading' counts as "attempted" (errored rows are
- * attempted-and-failed, not still-in-queue).
+ * One-shot snapshot of every consumer-relevant queue field. Replaces the
+ * three-getter dance (isImageQueuePaused + getImageQueueCycle +
+ * getImageQueueCycleProgress) so the store only takes one read per refresh
+ * and there's a single place to add new fields. The "processed" derivation
+ * is: anything not 'queued' OR 'downloading' counts as attempted; errored
+ * rows are attempted-and-failed, not still-in-queue.
  */
-export function getImageQueueCycleProgress(): {
-  processed: number;
-  total: number;
-  failed: number;
-} {
-  const { cycleId, cycleTotal } = readImageQueueMeta();
-  if (cycleId === null || cycleTotal === 0) {
-    return { processed: 0, total: 0, failed: 0 };
+export function getImageQueueState(): ImageQueueState {
+  const meta = readImageQueueMeta();
+  if (meta.cycleId === null || meta.cycleTotal === 0) {
+    return {
+      cycleId: meta.cycleId,
+      cycleScope: meta.cycleScope,
+      cycleTotal: meta.cycleTotal,
+      processed: 0,
+      failed: 0,
+      isPaused: meta.isPaused,
+    };
   }
-  const remainingInQueue = countImageQueueRowsByCycle(cycleId);
+  const remainingInQueue = countImageQueueRowsByCycle(meta.cycleId);
   const errored = countImageQueueRowsByStatus('error');
-  // remainingInQueue includes 'queued' + 'downloading' + 'error'. The
-  // "processed" UI count is total - (queued + downloading) — errored
-  // rows count as attempted. Compute via the SQL we have:
-  //   processed = total - (queued + downloading)
-  //             = total - (remainingInQueue - error_in_this_cycle)
-  // We can compute error_in_this_cycle as a separate count but for now
-  // expose it bluntly: failed = countImageQueueRowsByStatus('error') is
-  // global across cycles; in practice only one cycle runs at a time so
-  // this is accurate.
   const queuedOrDownloading = remainingInQueue - errored;
-  const processed = Math.max(0, cycleTotal - Math.max(0, queuedOrDownloading));
-  return { processed, total: cycleTotal, failed: errored };
+  const processed = Math.max(0, meta.cycleTotal - Math.max(0, queuedOrDownloading));
+  return {
+    cycleId: meta.cycleId,
+    cycleScope: meta.cycleScope,
+    cycleTotal: meta.cycleTotal,
+    processed,
+    failed: errored,
+    isPaused: meta.isPaused,
+  };
 }
 
 /* ----- Queue-change pub/sub for store consumers ----- */

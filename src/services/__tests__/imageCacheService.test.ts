@@ -279,11 +279,11 @@ import {
   ensureCached,
   getImageCacheStats,
   clearImageCache,
-  listCachedImagesAsync,
+  listCachedImages,
   deleteCachedImage,
   refreshCoverArt,
-  reconcileImageCacheAsync,
-  repairIncompleteImagesAsync,
+  reconcileImageCache,
+  repairIncompleteImages,
   __resetRetryStateForTest,
 } from '../imageCacheService';
 
@@ -300,7 +300,7 @@ const { fetch: mockFetch } = jest.requireMock('expo/fetch') as { fetch: jest.Moc
 async function flushSpawned(): Promise<void> {
   // Two setImmediate rounds is sufficient: the first lets the spawned
   // chain's first await (awaitFirstPing) progress past the boundary; the
-  // second lets the inner await chain inside repairIncompleteImagesAsync
+  // second lets the inner await chain inside repairIncompleteImages
   // settle.
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
@@ -504,9 +504,9 @@ describe('getImageCacheStats', () => {
   });
 });
 
-describe('listCachedImagesAsync', () => {
+describe('listCachedImages', () => {
   it('returns empty array when DB has no rows', async () => {
-    const result = await listCachedImagesAsync();
+    const result = await listCachedImages();
     expect(result).toEqual([]);
   });
 
@@ -515,7 +515,7 @@ describe('listCachedImagesAsync', () => {
     seedDbRow({ coverArtId: 'art-1', size: 300, ext: 'jpg' });
     seedDbRow({ coverArtId: 'art-1', size: 600, ext: 'webp' });
 
-    const result = await listCachedImagesAsync();
+    const result = await listCachedImages();
     expect(result).toHaveLength(1);
     expect(result[0].coverArtId).toBe('art-1');
     expect(result[0].complete).toBe(false);
@@ -529,8 +529,8 @@ describe('listCachedImagesAsync', () => {
     for (const size of [50, 150, 300, 600]) seedDbRow({ coverArtId: 'complete-art', size });
     seedDbRow({ coverArtId: 'partial-art', size: 600 });
 
-    const complete = await listCachedImagesAsync('complete');
-    const incomplete = await listCachedImagesAsync('incomplete');
+    const complete = await listCachedImages('complete');
+    const incomplete = await listCachedImages('incomplete');
     expect(complete.map((e) => e.coverArtId)).toEqual(['complete-art']);
     expect(incomplete.map((e) => e.coverArtId)).toEqual(['partial-art']);
   });
@@ -747,7 +747,7 @@ describe('generateResizedVariant — success and catch paths', () => {
   });
 });
 
-describe('repairIncompleteImagesAsync', () => {
+describe('repairIncompleteImages', () => {
   it('deletes .tmp files and re-queues incomplete downloads', async () => {
     const id = 'stalled';
     const sdName = subDirName(id);
@@ -850,7 +850,7 @@ describe('AppState listener (lines 114-115)', () => {
     expect(addEventListenerCall).toBeDefined();
     const callback = addEventListenerCall[1];
 
-    // Provide listDirectoryAsync so repairIncompleteImagesAsync works
+    // Provide listDirectoryAsync so repairIncompleteImages works
     mockListDirectoryAsync.mockResolvedValue([]);
 
     // Trigger with 'active' — should not throw
@@ -860,7 +860,7 @@ describe('AppState listener (lines 114-115)', () => {
   });
 });
 
-describe('repairIncompleteImagesAsync — inner listDirectoryAsync failure (line 182)', () => {
+describe('repairIncompleteImages — inner listDirectoryAsync failure (line 182)', () => {
   it('continues to next subdir when inner listing fails', async () => {
     // reconcile + recover each walk top-level once then each subdir once.
     // Make the top-level always report two dirs; the bad-dir always rejects,
@@ -1024,13 +1024,13 @@ describe('generateResizedVariant — 3-failure circuit breaker purges row', () =
   // fallback handles user-visible recovery instead.
 });
 
-describe('listCachedImagesAsync — reconstructs URIs from DB row shape', () => {
+describe('listCachedImages — reconstructs URIs from DB row shape', () => {
   it('builds the file URI from (coverArtId, size, ext) on every row', async () => {
     seedDbRow({ coverArtId: 'good-dir', size: 300, ext: 'jpg' });
     seedDbRow({ coverArtId: 'good-dir', size: 600, ext: 'jpg' });
     mockDirExistsMap.set(subDirName('good-dir'), true);
 
-    const result = await listCachedImagesAsync();
+    const result = await listCachedImages();
 
     expect(result).toHaveLength(1);
     expect(result[0].coverArtId).toBe('good-dir');
@@ -1081,10 +1081,10 @@ describe('resolveAllWaiters with pending resolvers (line 259)', () => {
 });
 
 /* ------------------------------------------------------------------ */
-/*  reconcileImageCacheAsync — zero-byte detection                    */
+/*  reconcileImageCache — zero-byte detection                    */
 /* ------------------------------------------------------------------ */
 
-describe('reconcileImageCacheAsync — zero-byte detection', () => {
+describe('reconcileImageCache — zero-byte detection', () => {
   /** Internal key helper matching the mock File constructor chain. */
   function fileName(coverArtId: string, size: number, ext = 'jpg'): string {
     return fileMockName(coverArtId, `${size}.${ext}`);
@@ -1099,7 +1099,7 @@ describe('reconcileImageCacheAsync — zero-byte detection', () => {
     mockFileExistsMap.set(fileName('album1', 600), true);
     mockFileSizeMap.set(fileName('album1', 600), 0);
 
-    await reconcileImageCacheAsync();
+    await reconcileImageCache();
 
     // Zero-byte file was deleted…
     expect(mockFileDeleteCalls.has(fileName('album1', 600))).toBe(true);
@@ -1117,7 +1117,7 @@ describe('reconcileImageCacheAsync — zero-byte detection', () => {
     mockFileExistsMap.set(fileName('album1', 600), true);
     mockFileSizeMap.set(fileName('album1', 600), 12345);
 
-    await reconcileImageCacheAsync();
+    await reconcileImageCache();
 
     expect(mockFileDeleteCalls.has(fileName('album1', 600))).toBe(false);
     expect(mockBulkInsertCachedImages).toHaveBeenCalledWith(
@@ -1133,7 +1133,7 @@ describe('reconcileImageCacheAsync — zero-byte detection', () => {
     mockFileExistsMap.set(fileName('album2', 600), true);
     mockFileSizeMap.set(fileName('album2', 600), 0);
 
-    await reconcileImageCacheAsync();
+    await reconcileImageCache();
 
     // The zero-byte file was deleted…
     expect(mockFileDeleteCalls.has(fileName('album2', 600))).toBe(true);
@@ -1148,7 +1148,7 @@ describe('reconcileImageCacheAsync — zero-byte detection', () => {
     // File doesn't exist on disk.
     mockFileExistsMap.set(fileName('album3', 600), false);
 
-    await reconcileImageCacheAsync();
+    await reconcileImageCache();
 
     expect(mockDeleteCachedImageVariant).toHaveBeenCalledWith('album3', 600);
     expect(mockDbRows.has('album3::600')).toBe(false);
@@ -1339,7 +1339,7 @@ describe('deferredImageCacheInit — throttle + idle deferral', () => {
     mockFileExistsMap.set(fileMockName('album1', '600.jpg'), true);
     mockFileSizeMap.set(fileMockName('album1', '600.jpg'), 1000);
 
-    await reconcileImageCacheAsync();
+    await reconcileImageCache();
 
     expect(mockBulkInsertCachedImages).toHaveBeenCalled();
     expect(mockMarkReconcileRan).toHaveBeenCalledTimes(1);
@@ -1371,7 +1371,7 @@ describe('deferredImageCacheInit — throttle + idle deferral', () => {
     // Silence the safety-gate warn.
     jest.spyOn(console, 'warn').mockImplementation(() => {});
 
-    await reconcileImageCacheAsync();
+    await reconcileImageCache();
 
     // Bulk insert was NOT called (safety gate skipped it).
     expect(mockBulkInsertCachedImages).not.toHaveBeenCalled();
@@ -1431,7 +1431,7 @@ describe('sentinel cover-art IDs — sweep + guards', () => {
     mockOfflineMode.offlineMode = false;
   });
 
-  it('repairIncompleteImagesAsync sweeps sentinels before classifying outcomes', async () => {
+  it('repairIncompleteImages sweeps sentinels before classifying outcomes', async () => {
     // 2 sentinel rows (incomplete) + 1 real incomplete that will fail to fetch.
     // Connectivity is down so the 500 stays as `failed` rather than being
     // purged — we want this test to exercise the failed-classification path
@@ -1447,7 +1447,7 @@ describe('sentinel cover-art IDs — sweep + guards', () => {
       arrayBuffer: async () => new ArrayBuffer(0),
     });
 
-    const outcome = await repairIncompleteImagesAsync();
+    const outcome = await repairIncompleteImages();
 
     // Sentinels don't show up in `queued` (they're swept before the snapshot).
     expect(outcome.queued).toBe(1);
@@ -1595,16 +1595,16 @@ describe('downloadSourceImage — connectivity-gated purge', () => {
 });
 
 /* ------------------------------------------------------------------ */
-/*  repairIncompleteImagesAsync — outcome classification                */
+/*  repairIncompleteImages — outcome classification                */
 /* ------------------------------------------------------------------ */
 
-describe('repairIncompleteImagesAsync — outcome counts', () => {
+describe('repairIncompleteImages — outcome counts', () => {
   function fileName(coverArtId: string, size: number, ext = 'jpg'): string {
     return fileMockName(coverArtId, `${size}.${ext}`);
   }
 
   it('returns {0,0,0,0} for an empty incomplete set', async () => {
-    const outcome = await repairIncompleteImagesAsync();
+    const outcome = await repairIncompleteImages();
     expect(outcome).toEqual({ queued: 0, repaired: 0, failed: 0, removed: 0 });
   });
 
@@ -1628,7 +1628,7 @@ describe('repairIncompleteImagesAsync — outcome counts', () => {
       mockFileSizeMap.set(targetUri.replace(/^file:\/\//, ''), 64);
     });
 
-    const outcome = await repairIncompleteImagesAsync();
+    const outcome = await repairIncompleteImages();
 
     expect(outcome.queued).toBe(1);
     expect(outcome.repaired).toBe(1);
@@ -1645,7 +1645,7 @@ describe('repairIncompleteImagesAsync — outcome counts', () => {
       arrayBuffer: async () => new ArrayBuffer(0),
     });
 
-    const outcome = await repairIncompleteImagesAsync();
+    const outcome = await repairIncompleteImages();
 
     expect(outcome.queued).toBe(1);
     expect(outcome.removed).toBe(1);
@@ -1665,7 +1665,7 @@ describe('repairIncompleteImagesAsync — outcome counts', () => {
       arrayBuffer: async () => new ArrayBuffer(0),
     });
 
-    const outcome = await repairIncompleteImagesAsync();
+    const outcome = await repairIncompleteImages();
 
     expect(outcome.queued).toBe(1);
     expect(outcome.removed).toBe(1);
@@ -1685,7 +1685,7 @@ describe('repairIncompleteImagesAsync — outcome counts', () => {
       arrayBuffer: async () => new ArrayBuffer(0),
     });
 
-    const outcome = await repairIncompleteImagesAsync();
+    const outcome = await repairIncompleteImages();
 
     expect(outcome.queued).toBe(1);
     expect(outcome.failed).toBe(1);
@@ -1697,7 +1697,7 @@ describe('repairIncompleteImagesAsync — outcome counts', () => {
     seedDbRow({ coverArtId: 'album-transport-fail', size: 600 });
     mockFetch.mockRejectedValue(new Error('Network request failed'));
 
-    const outcome = await repairIncompleteImagesAsync();
+    const outcome = await repairIncompleteImages();
 
     expect(outcome.queued).toBe(1);
     expect(outcome.failed).toBe(1);
@@ -1789,7 +1789,7 @@ describe('coverArtPathKey — FS-hostile coverArtId sanitisation', () => {
 /*  Reconcile: uriCache eviction on row deletion                       */
 /* ------------------------------------------------------------------ */
 
-describe('reconcileImageCacheAsync — uriCache eviction', () => {
+describe('reconcileImageCache — uriCache eviction', () => {
   it('Pass 2: evicts the URI cache entry when a DB row is deleted for a missing file', async () => {
     // Seed a DB row for a cover whose file no longer exists on disk.
     seedDbRow({ coverArtId: 'gone-album', size: 600, ext: 'jpg' });
@@ -1801,7 +1801,7 @@ describe('reconcileImageCacheAsync — uriCache eviction', () => {
     // Prime: cache the null lookup (file doesn't exist).
     _get('gone-album', 600);
 
-    await reconcileImageCacheAsync();
+    await reconcileImageCache();
 
     // Row was deleted and the variant-level uriCache entry is evicted.
     expect(mockDeleteCachedImageVariant).toHaveBeenCalledWith('gone-album', 600);
