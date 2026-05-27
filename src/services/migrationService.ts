@@ -1903,14 +1903,14 @@ const MIGRATION_TASKS: MigrationTask[] = [
       // `coverArt` field. The pre-migration cache holds files keyed by
       // server-specific IDs that no consumer queries any more — Navidrome
       // `_<digit>` per-track variants, `_<hex>` content-hash versions.
-      // All dead weight that actively confuses the cache (broken parent
-      // rows were causing CachedImage errorSuppress to latch placeholders).
+      // They're dead weight on disk and inflate the cache-size aggregate
+      // in Settings → Image Cache.
       //
       // Wiping the entire cache here is safe — on-demand re-fetch via
-      // CachedImage's existing debounce will repopulate with the new
-      // entity-ID-keyed files as soon as the user lands on a screen. For
-      // offline-first users, "Settings → Storage → Refresh covers for
-      // downloaded music" eager-repopulates while online.
+      // CachedImage's `ensureCached` repopulates with the new entity-ID-
+      // keyed files as soon as the user lands on a screen. For
+      // offline-first users, Settings → Image Cache → "Refresh
+      // Downloaded" eager-repopulates while online.
       try {
         const { clearImageCache } = require('./imageCacheService') as {
           clearImageCache: () => Promise<number>;
