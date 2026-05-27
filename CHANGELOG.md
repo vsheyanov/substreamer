@@ -1,5 +1,43 @@
 # Changelog
 
+## [8.0.66] - 2026-05-27
+
+- fix first load image cache and remove some packages from expo exclusions as expo recommended versions have caught up
+- i18n(en): rename "Audio Diagnostics" section to "Player Logging"
+- fix(player): align shuffle with proven reset+add path
+- refactor(migrations): consolidate unshipped 22-26 + add one-shot reset
+- refactor(player): extract stateless helpers to playerHelpers
+- refactor(cached-image): unify errorSuppress clear-paths around R7
+- refactor(settings/index): split SettingsLinkRow + VersionFooter
+- refactor(settings/library-data): decompose into per-card components
+- refactor(settings/server): decompose into per-card components
+- refactor(settings/connectivity): decompose into per-card components
+- refactor(settings/storage): decompose into per-card components
+- refactor(settings/appearance): decompose into per-card components
+- refactor(settings/playback): decompose into per-card components
+- feat(settings): add shared primitives for upcoming decomposition
+- refactor(image-cache): unify clearImageCache + wipeImageCacheForLogout
+- refactor(backup): extract writeBackupDataset helper
+- refactor(image-cache): delete mount-time microtask cacheAllSizes
+- refactor(image-cache): delete boot-retry + connectivity-store subscriber
+- refactor(image-cache): delete post-Migration-25 dead code
+- perf(search): rewrite offline search around cachedSongs only
+- refactor(sync): name STARTUP_PREFETCH_SETTLE_MS
+- refactor(failover): use shared withTimeout util in pingUrl
+- chore(logging): rename migration-log screen to logging
+- chore(i18n): drop 22 unreferenced en.json keys
+- refactor(alerts): delete dead alertProps shim + local ThemedAlert renders
+- ci: update coverage badge [skip ci]
+- feat(library): Songs segment + matching row/list padding alignment
+- feat(song_index): add album column + Migration 26 backfill
+- feat(settings): album cache refresh dropdown with simpler labels
+- fix(cover-art): fire fetch on mount, not just after debounce
+- fix(cover-art): self-retry boot-race when cacheAllSizes lands no file
+- fix(image-cache): correct disk-usage accounting for resized variants
+- fix(cover-art): unstick CachedImage on server-reachable transition
+- feat(image-cache): Migration 25 — wipe image cache for entity-ID model
+- fix(cover-art): key cover-art lookups off entity IDs everywhere
+- revert(cover-art): drop the _\d+$ parent fallback in getCachedImageUri
 ## [8.0.65] - 2026-05-25
 
 - ci: update coverage badge [skip ci]
