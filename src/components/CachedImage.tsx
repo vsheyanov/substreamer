@@ -229,6 +229,10 @@ export const CachedImage = memo(function CachedImage({
         .then(() => {
           if (cancelled || currentIdRef.current !== coverArtId) return;
           if (getCachedImageUri(coverArtId, size) != null) {
+            // File landed at the requested size. Mirror R7's clear so
+            // any errorSuppress state from an earlier failed remote
+            // attempt is lifted before re-rendering.
+            setErrorSuppress(false);
             setReloadNonce((n) => n + 1);
           }
         })
@@ -254,16 +258,20 @@ export const CachedImage = memo(function CachedImage({
   }, []);
 
   /* ---- subscribe to cache-update events for this coverArtId -------- */
-  // If a future cacheAllSizes call (e.g. from the hero on the album-
-  // detail screen) successfully lands the file on disk AFTER this card
-  // gave up to placeholder, the subscription fires and bumps
-  // reloadNonce — the next render re-derives `cachedUri` from the
-  // filesystem and the card switches from placeholder to the cached
-  // image without user interaction. Fixes the "stuck on placeholder
-  // even though hero loaded fine" class of bug.
+  // Canonical "file landed, try again" signal. When ANY code path
+  // successfully writes a variant for this coverArtId (the hero on the
+  // album-detail screen, the refresh-queue worker, the post-reconnect
+  // repair pass, etc.), the subscription fires and we:
+  //   1. Clear errorSuppress — the cause that made us suppress may no
+  //      longer apply now that a fresh file is on disk.
+  //   2. Bump reloadNonce so the next render re-derives cachedUri.
+  // Fixes the "stuck on placeholder even though hero loaded fine"
+  // class of bug and is the structural reason the give-up branch in
+  // handleImageError doesn't need to clear errorSuppress itself.
   useEffect(() => {
     if (!coverArtId) return;
     return subscribeImageCacheUpdate(coverArtId, () => {
+      setErrorSuppress(false);
       setReloadNonce((n) => n + 1);
     });
   }, [coverArtId]);
@@ -363,11 +371,13 @@ export const CachedImage = memo(function CachedImage({
         }
       }
       // Either we already tried the source-size fallback, or no
-      // fallback is possible. Drop the remote URL and lift errorSuppress
-      // so a freshly cached file URI (delivered later by the cache-
-      // update subscription) can render on the next reloadNonce bump.
+      // fallback is possible. Drop the remote URL and leave
+      // errorSuppress=true. The cache-update subscription is the
+      // canonical clear path — when a fresh file lands on disk (via
+      // hero load on another screen, refresh-queue, etc.) R7 will
+      // clear errorSuppress and bump reloadNonce, and the render picks
+      // up the cached file. No need to clear here.
       setRemoteUri(undefined);
-      setErrorSuppress(false);
       return;
     }
     retriedRef.current = true;
@@ -402,6 +412,9 @@ export const CachedImage = memo(function CachedImage({
           logImageCache(
             `CachedImage retry-cacheAllSizes-resolved id=${coverArtId} size=${size} hit=${hit ? 'yes' : 'no'}`,
           );
+          // Mirror R7's clear path so a freshly-landed file (after the
+          // remote attempt failed twice) renders on the next pass.
+          setErrorSuppress(false);
           setReloadNonce((n) => n + 1);
         })
         .catch(() => { /* retry exhausted — placeholder stays visible */ });
