@@ -1,26 +1,23 @@
 /**
- * Tests for CachedImage render + recovery behaviour.
+ * CachedImage — state-machine tests for the three render branches.
  *
- * Invariant under test: the placeholder is ALWAYS in the view tree.
- * The Image is drawn on top and covers the placeholder when it
- * paints; if it isn't present or is hidden, the placeholder shows
- * through. We never end up with a blank rectangle.
+ *   LOCAL  → cached file URI rendered
+ *   REMOTE → server URL rendered (component asked service to cache)
+ *   PLACEHOLDER → no Image layer; the WaveformLogo shows through
  *
- * Scenarios:
- *   1. Placeholder is always rendered. A cached URI is rendered on
- *      top; the placeholder shows through wherever the image isn't
- *      painted yet.
- *   2. Broken local file: deleteCachedVariant is called on error and
- *      the 2.5s backoff retry sets a new URI with cache-buster.
- *   3. Remote 503: first load errors, backoff fires new setUri.
- *   4. Second failure after retry clears uri so the placeholder is
- *      visible with no Image layer.
- *   5. Navigation recovery: remount resets retry state.
- *   6. Sentinel coverArtId never triggers deleteCachedVariant.
- *   7. Offline preserves the cached file on error (no delete).
- *   8. Offline with valid cache renders the Image layer.
- *   9. No cache + no coverArtId + no fallback: only the placeholder
- *      renders. No Image element, no blank square possible.
+ * The placeholder is ALWAYS in the tree underneath the Image layer; the
+ * Image just covers it once it paints. We never end up with a blank
+ * rectangle.
+ *
+ * Service collaboration:
+ *   - On mount with no cached file: component calls `ensureCached(id)`.
+ *   - On cached-file decode error: `reportBadCache(id, size)`; component
+ *     marks a per-mount flag so it won't retry the same broken URI.
+ *   - On remote-URL load error: `reportBadRemote(id)`.
+ *   - The single recovery signal is `subscribeImageCacheUpdate(id, …)`:
+ *     when it fires, the component clears its local-error flag and
+ *     re-renders. The service is responsible for firing it on file
+ *     landed AND on remote-failed-flag flipped.
  */
 
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -36,21 +33,28 @@ import { act, render } from '@testing-library/react-native';
 /* ------------------------------------------------------------------ */
 
 const mockGetCachedImageUri = jest.fn<string | null, [string, number]>();
-const mockCacheAllSizes = jest.fn<Promise<void>, [string]>();
-const mockDeleteCachedVariant = jest.fn<void, [string, number]>();
+const mockEnsureCached = jest.fn<void, [string]>();
+const mockReportBadCache = jest.fn<void, [string, number]>();
+const mockReportBadRemote = jest.fn<void, [string]>();
+const mockIsRemoteFailed = jest.fn<boolean, [string]>();
+const mockBuildRemoteImageUrl = jest.fn<string | null, [string, number]>();
+
+let cacheUpdateListener: (() => void) | null = null;
 
 jest.mock('../../services/imageCacheService', () => ({
   getCachedImageUri: (id: string, size: number) => mockGetCachedImageUri(id, size),
-  cacheAllSizes: (id: string) => mockCacheAllSizes(id),
-  deleteCachedVariant: (id: string, size: number) => mockDeleteCachedVariant(id, size),
-  SOURCE_SIZE: 600,
-  subscribeImageCacheUpdate: jest.fn(() => () => {}),
+  ensureCached: (id: string) => mockEnsureCached(id),
+  reportBadCache: (id: string, size: number) => mockReportBadCache(id, size),
+  reportBadRemote: (id: string) => mockReportBadRemote(id),
+  isRemoteFailed: (id: string) => mockIsRemoteFailed(id),
+  buildRemoteImageUrl: (id: string, size: number) => mockBuildRemoteImageUrl(id, size),
+  subscribeImageCacheUpdate: (_id: string, listener: () => void) => {
+    cacheUpdateListener = listener;
+    return () => { cacheUpdateListener = null; };
+  },
 }));
 
-const mockGetCoverArtUrl = jest.fn<string | null, [string, number]>();
-
 jest.mock('../../services/subsonicService', () => ({
-  getCoverArtUrl: (id: string, size: number) => mockGetCoverArtUrl(id, size),
   VARIOUS_ARTISTS_COVER_ART_ID: '__VA__',
 }));
 
@@ -59,33 +63,12 @@ jest.mock('../../services/musicCacheService', () => ({
 }));
 
 let mockOfflineMode = false;
-let mockOfflineSubscribers: Array<
-  (state: { offlineMode: boolean }, prev: { offlineMode: boolean }) => void
-> = [];
 
 jest.mock('../../store/offlineModeStore', () => ({
-  offlineModeStore: {
-    getState: () => ({ offlineMode: mockOfflineMode }),
-    subscribe: (
-      cb: (state: { offlineMode: boolean }, prev: { offlineMode: boolean }) => void,
-    ) => {
-      mockOfflineSubscribers.push(cb);
-      return () => {
-        mockOfflineSubscribers = mockOfflineSubscribers.filter((s) => s !== cb);
-      };
-    },
-  },
+  offlineModeStore: jest.fn(<T,>(selector: (s: { offlineMode: boolean }) => T) =>
+    selector({ offlineMode: mockOfflineMode }),
+  ),
 }));
-
-/** Flip the mocked offlineMode and notify subscribers, mirroring zustand. */
-function setMockOfflineMode(next: boolean): void {
-  const prev = mockOfflineMode;
-  if (prev === next) return;
-  mockOfflineMode = next;
-  for (const cb of [...mockOfflineSubscribers]) {
-    cb({ offlineMode: next }, { offlineMode: prev });
-  }
-}
 
 jest.mock('../WaveformLogo', () => {
   const { View } = require('react-native');
@@ -103,625 +86,257 @@ jest.mock('react-native-reanimated', () => {
   return {
     __esModule: true,
     default: { View, Image },
-    // Real reanimated returns a stable shared value across renders via
-    // internal caching. Our mock must do the same — otherwise the
-    // returned object is a fresh reference every render, which would
-    // invalidate any useEffect/useLayoutEffect dep array that includes
-    // it and cause infinite effect re-runs.
     useSharedValue: (init: number) => {
       const ref = ReactActual.useRef({ value: init });
       return ref.current;
     },
     useAnimatedStyle: (fn: () => object) => fn(),
-    withTiming: (val: number, _cfg?: object, cb?: (finished: boolean) => void) => {
-      if (cb) cb(true);
-      return val;
-    },
+    withTiming: (val: number) => val,
     cancelAnimation: () => {},
     runOnJS: (fn: (...args: unknown[]) => unknown) => fn,
   };
 });
 
-const originalResolveAssetSource = RNImage.resolveAssetSource;
-// @ts-expect-error — override for tests
-RNImage.resolveAssetSource = () => ({ uri: 'file:///bundled/asset.jpg' });
-
-afterAll(() => {
-  RNImage.resolveAssetSource = originalResolveAssetSource;
-});
-
-const { CachedImage } = require('../CachedImage');
+jest.mock('../../services/imageCacheLogger', () => ({
+  logImageCache: jest.fn(),
+}));
 
 /* ------------------------------------------------------------------ */
-/*  Helpers                                                            */
+/*  Test helpers                                                       */
 /* ------------------------------------------------------------------ */
 
-/** Walk the JSON snapshot (reflects the currently-committed render only). */
-function findImagesInJSON(toJSON: () => unknown): Array<{ type: string; props: any }> {
-  const out: Array<{ type: string; props: any }> = [];
-  const visit = (node: unknown): void => {
-    if (!node || typeof node !== 'object') return;
-    const n = node as { type?: string; props?: any; children?: unknown };
-    if (n.type === 'Image' && typeof n.props?.source?.uri === 'string') {
-      out.push({ type: n.type, props: n.props });
-    }
-    if (Array.isArray(n.children)) for (const c of n.children) visit(c);
-  };
-  visit(toJSON());
-  return out;
-}
+import { CachedImage } from '../CachedImage';
 
-/**
- * Resolve the onError/onLoad callback for the currently-rendered image
- * whose URI contains `substring`. Uses the fiber tree (UNSAFE_root) to
- * get live handler references, but filters by props.source.uri which is
- * the latest prop of mounted components.
- */
-function getRenderedImageHandlers(
-  toJSON: () => unknown,
-  UNSAFE_root: any,
-  substring: string,
-): { onLoad?: () => void; onError?: () => void; source: { uri: string } } | null {
-  // Confirm via the JSON snapshot that an image matching `substring` is
-  // actually rendered.
-  const inJson = findImagesInJSON(toJSON).find((n) =>
-    n.props.source.uri.includes(substring),
-  );
-  if (!inJson) return null;
-  // Then pick up the fiber for its handler refs.
-  const fiber = UNSAFE_root.findAll((n: any) =>
-    n.type === 'Image' &&
-    typeof n.props?.source?.uri === 'string' &&
-    n.props.source.uri === inJson.props.source.uri,
-  )[0];
-  if (!fiber) return null;
-  return {
-    onLoad: fiber.props?.onLoad,
-    onError: fiber.props?.onError,
-    source: fiber.props.source,
-  };
-}
-
-async function flushEffects(): Promise<void> {
-  await act(async () => {
-    await Promise.resolve();
-  });
-}
-
-beforeEach(() => {
+function resetMocks(): void {
   mockGetCachedImageUri.mockReset();
-  mockCacheAllSizes.mockReset();
-  mockDeleteCachedVariant.mockReset();
-  mockGetCoverArtUrl.mockReset();
+  mockEnsureCached.mockReset();
+  mockReportBadCache.mockReset();
+  mockReportBadRemote.mockReset();
+  mockIsRemoteFailed.mockReset();
+  mockBuildRemoteImageUrl.mockReset();
+  cacheUpdateListener = null;
   mockOfflineMode = false;
-  mockOfflineSubscribers = [];
 
+  // Sensible defaults — tests override individually.
   mockGetCachedImageUri.mockReturnValue(null);
-  mockCacheAllSizes.mockResolvedValue(undefined);
-  mockGetCoverArtUrl.mockReturnValue('https://example.com/cover.jpg?t=abc&s=600');
+  mockIsRemoteFailed.mockReturnValue(false);
+  mockBuildRemoteImageUrl.mockImplementation(
+    (id, size) => `https://srv.example/art?id=${id}&size=${size}`,
+  );
+}
 
-  jest.useFakeTimers();
-});
+beforeEach(resetMocks);
 
-afterEach(() => {
-  jest.useRealTimers();
+/** Find the Image layer in the rendered tree (if any). The placeholder
+ *  is a View with testID; the Image is the only Image element in the
+ *  output once the component renders one. */
+function findImage(tree: ReturnType<typeof render>): { uri: string } | null {
+  const images = tree.UNSAFE_queryAllByType(RNImage);
+  if (images.length === 0) return null;
+  const last = images[images.length - 1];
+  const src = last.props.source;
+  if (typeof src === 'object' && src && 'uri' in src && typeof src.uri === 'string') {
+    return { uri: src.uri };
+  }
+  return null;
+}
+
+/** Fire the cache-update notification the service would normally send. */
+function fireCacheUpdate(): void {
+  act(() => {
+    cacheUpdateListener?.();
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/*  LOCAL: cached file present                                         */
+/* ------------------------------------------------------------------ */
+
+describe('LOCAL state', () => {
+  it('renders the cached URI when getCachedImageUri returns a file://', () => {
+    mockGetCachedImageUri.mockReturnValue('file:///cache/abc/150.jpg');
+    const tree = render(<CachedImage coverArtId="abc" size={150} />);
+    expect(findImage(tree)?.uri).toBe('file:///cache/abc/150.jpg');
+  });
+
+  it('does NOT call ensureCached when a cached file already exists', () => {
+    mockGetCachedImageUri.mockReturnValue('file:///cache/abc/150.jpg');
+    render(<CachedImage coverArtId="abc" size={150} />);
+    expect(mockEnsureCached).not.toHaveBeenCalled();
+  });
 });
 
 /* ------------------------------------------------------------------ */
-/*  Tests                                                              */
+/*  REMOTE: no cache, online, not flagged                              */
 /* ------------------------------------------------------------------ */
 
-describe('CachedImage', () => {
-  it('1. placeholder is always rendered; a cached URI is drawn on top at full opacity', async () => {
-    mockGetCachedImageUri.mockReturnValue('file:///cache/abc/600.jpg');
-
-    const { queryByTestId, toJSON, UNSAFE_root } = render(
-      <CachedImage coverArtId="album1" size={600} />,
-    );
-    await flushEffects();
-
-    // Placeholder is always part of the tree — the never-blank invariant.
-    expect(queryByTestId('waveform-placeholder')).not.toBeNull();
-
-    // Image is rendered with the cached URI on the first frame.
-    const img = getRenderedImageHandlers(toJSON, UNSAFE_root, 'file:///cache/abc/600.jpg');
-    expect(img).not.toBeNull();
-
-    // Placeholder stays in the tree after onLoad too — the Image just
-    // covers it visually.
-    await act(async () => {
-      img!.onLoad?.();
-      await Promise.resolve();
-    });
-    expect(queryByTestId('waveform-placeholder')).not.toBeNull();
-  });
-
-  it('2. broken local file on error: deletes variant and retries with cache-buster after 2.5s', async () => {
-    mockGetCachedImageUri
-      .mockReturnValueOnce('file:///cache/abc/600.jpg')
-      .mockReturnValueOnce('file:///cache/abc/600.jpg')
-      .mockReturnValueOnce('file:///cache/abc/600.jpg')
-      .mockReturnValue(null);
-
-    const { toJSON, UNSAFE_root } = render(<CachedImage coverArtId="album1" size={600} />);
-    await flushEffects();
-
-    const img = getRenderedImageHandlers(toJSON, UNSAFE_root, 'file:///cache/abc/600.jpg');
-    expect(img).not.toBeNull();
-
-    await act(async () => {
-      img!.onError?.();
-      await Promise.resolve();
-    });
-
-    expect(mockDeleteCachedVariant).toHaveBeenCalledWith('album1', 600);
-
-    await act(async () => {
-      jest.advanceTimersByTime(2500);
-      await Promise.resolve();
-    });
-
-    const retried = findImagesInJSON(toJSON).find((n) => n.props.source.uri.includes('_r='));
-    expect(retried).toBeTruthy();
-    expect(mockCacheAllSizes).toHaveBeenCalledWith('album1');
-  });
-
-  it('3. remote 503-style error retries after backoff', async () => {
+describe('REMOTE state', () => {
+  it('renders the remote URL when no cached file exists', () => {
     mockGetCachedImageUri.mockReturnValue(null);
-
-    const { toJSON, UNSAFE_root } = render(<CachedImage coverArtId="album1" size={600} />);
-    await flushEffects();
-
-    await act(async () => {
-      jest.advanceTimersByTime(150);
-      await Promise.resolve();
-    });
-
-    const img = getRenderedImageHandlers(toJSON, UNSAFE_root, 'https://example.com/cover.jpg');
-    expect(img).not.toBeNull();
-
-    await act(async () => {
-      img!.onError?.();
-      await Promise.resolve();
-    });
-
-    // Remote URL did not start with file:// → no deletion.
-    expect(mockDeleteCachedVariant).not.toHaveBeenCalled();
-
-    await act(async () => {
-      jest.advanceTimersByTime(2500);
-      await Promise.resolve();
-    });
-
-    const retried = findImagesInJSON(toJSON).find((n) => n.props.source.uri.includes('_r='));
-    expect(retried).toBeTruthy();
+    const tree = render(<CachedImage coverArtId="abc" size={150} />);
+    expect(findImage(tree)?.uri).toContain('id=abc&size=150');
   });
 
-  it('4. second failure after retry surfaces placeholder (uri cleared)', async () => {
-    mockGetCachedImageUri
-      .mockReturnValueOnce('file:///cache/abc/600.jpg')
-      .mockReturnValueOnce('file:///cache/abc/600.jpg')
-      .mockReturnValueOnce('file:///cache/abc/600.jpg')
-      .mockReturnValue(null);
-
-    const { queryByTestId, toJSON, UNSAFE_root } = render(
-      <CachedImage coverArtId="album1" size={600} />,
-    );
-    await flushEffects();
-
-    const img = getRenderedImageHandlers(toJSON, UNSAFE_root, 'file:///cache/abc/600.jpg');
-    expect(img).not.toBeNull();
-
-    await act(async () => {
-      img!.onError?.();
-      await Promise.resolve();
-    });
-
-    await act(async () => {
-      jest.advanceTimersByTime(2500);
-      await Promise.resolve();
-    });
-
-    const retryImg = getRenderedImageHandlers(toJSON, UNSAFE_root, '_r=');
-    expect(retryImg).not.toBeNull();
-
-    await act(async () => {
-      retryImg!.onError?.();
-      await Promise.resolve();
-    });
-
-    // Placeholder is still in the tree (always is) and the Image layer
-    // is suppressed so the placeholder shows through with nothing on top.
-    expect(queryByTestId('waveform-placeholder')).not.toBeNull();
-    expect(findImagesInJSON(toJSON)).toHaveLength(0);
-  });
-
-  it('4b. second failure does not strand a freshly-cached file', async () => {
-    // Disk has nothing initially → the debounced effect kicks off the
-    // remote fetch path. A deferred resolver is wired so the test can
-    // resolve the retry's cacheAllSizes call AFTER the second error
-    // fires, simulating the real race: cacheAllSizes lands the file on
-    // disk while RN's <Image> is busy erroring out.
-    //
-    // Renders at size=600 (SOURCE_SIZE) so the new source-size fallback
-    // path (which kicks in on second-failure for smaller sizes) is NOT
-    // triggered — the test exercises the give-up-to-placeholder path
-    // followed by cache-resolver recovery, which is independent of the
-    // fallback behaviour.
+  it('calls ensureCached on mount when no cached file exists', () => {
     mockGetCachedImageUri.mockReturnValue(null);
-    let resolveRetryCache: (() => void) | null = null;
-    mockCacheAllSizes
-      // Debounce fetch resolves first.
-      .mockResolvedValueOnce(undefined)
-      // Retry fetch — deferred so the test can control resolution after the
-      // second error fires, simulating the real cacheAllSizes-lands-after-
-      // errors race.
-      .mockImplementationOnce(
-        () => new Promise<void>((resolve) => {
-          resolveRetryCache = resolve;
-        }),
-      );
-
-    const { queryByTestId, toJSON, UNSAFE_root } = render(
-      <CachedImage coverArtId="album1" size={600} />,
-    );
-    await flushEffects();
-
-    // Debounce fires → remote URL is set, RN <Image> mounts.
-    await act(async () => {
-      jest.advanceTimersByTime(150);
-      await Promise.resolve();
-    });
-
-    const firstRemote = getRenderedImageHandlers(
-      toJSON,
-      UNSAFE_root,
-      'https://example.com/cover.jpg',
-    );
-    expect(firstRemote).not.toBeNull();
-
-    // First error → retry scheduled.
-    await act(async () => {
-      firstRemote!.onError?.();
-      await Promise.resolve();
-    });
-
-    // Retry fires → second remote (cache-buster) is rendered.
-    await act(async () => {
-      jest.advanceTimersByTime(2500);
-      await Promise.resolve();
-    });
-    const retryRemote = getRenderedImageHandlers(toJSON, UNSAFE_root, '_r=');
-    expect(retryRemote).not.toBeNull();
-
-    // Second error → without the fix, errorSuppress stays true and the
-    // freshly-landed cached file below would never render.
-    await act(async () => {
-      retryRemote!.onError?.();
-      await Promise.resolve();
-    });
-    expect(findImagesInJSON(toJSON)).toHaveLength(0);
-    expect(queryByTestId('waveform-placeholder')).not.toBeNull();
-
-    // Now the disk has the file (cacheAllSizes finished writing) and
-    // its promise resolves → setReloadNonce++ → next render must show
-    // the cached file URI.
-    mockGetCachedImageUri.mockReturnValue('file:///cache/abc/600.jpg');
-    await act(async () => {
-      resolveRetryCache!();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    const recovered = getRenderedImageHandlers(
-      toJSON,
-      UNSAFE_root,
-      'file:///cache/abc/600.jpg',
-    );
-    expect(recovered).not.toBeNull();
+    render(<CachedImage coverArtId="abc" size={150} />);
+    expect(mockEnsureCached).toHaveBeenCalledWith('abc');
   });
+});
 
-  it('5. navigation recovery: remounting with a new id resets retry state', async () => {
-    mockGetCachedImageUri.mockReturnValue('file:///cache/a/600.jpg');
+/* ------------------------------------------------------------------ */
+/*  PLACEHOLDER branches                                               */
+/* ------------------------------------------------------------------ */
 
-    const { rerender, toJSON, UNSAFE_root } = render(
-      <CachedImage coverArtId="albumA" size={600} />,
-    );
-    await flushEffects();
-
-    const imgA = getRenderedImageHandlers(toJSON, UNSAFE_root, 'file:///cache/a/600.jpg');
-    await act(async () => {
-      imgA!.onError?.();
-      await Promise.resolve();
-    });
-
-    mockGetCachedImageUri.mockReturnValue('file:///cache/b/600.jpg');
-    rerender(<CachedImage coverArtId="albumB" size={600} />);
-    await flushEffects();
-
-    const imgB = getRenderedImageHandlers(toJSON, UNSAFE_root, 'file:///cache/b/600.jpg');
-    expect(imgB).not.toBeNull();
-
-    await act(async () => {
-      imgB!.onError?.();
-      await Promise.resolve();
-    });
-    expect(mockDeleteCachedVariant).toHaveBeenLastCalledWith('albumB', 600);
-  });
-
-  it('6. sentinel coverArtId never triggers deleteCachedVariant', async () => {
-    mockGetCachedImageUri.mockReturnValue(null);
-
-    const { toJSON, UNSAFE_root } = render(
-      <CachedImage coverArtId="__STARRED__" size={600} />,
-    );
-    await flushEffects();
-
-    const anyImg = findImagesInJSON(toJSON)[0];
-    expect(anyImg).toBeTruthy();
-    const handlers = getRenderedImageHandlers(toJSON, UNSAFE_root, anyImg.props.source.uri);
-    expect(handlers).not.toBeNull();
-
-    await act(async () => {
-      handlers!.onError?.();
-      await Promise.resolve();
-    });
-
-    expect(mockDeleteCachedVariant).not.toHaveBeenCalled();
-  });
-
-  it('7. offline preserves the cached file on error (no delete) and shows placeholder', async () => {
+describe('PLACEHOLDER state', () => {
+  it('renders no Image layer when offline + no cache', () => {
     mockOfflineMode = true;
-    mockGetCachedImageUri.mockReturnValue('file:///cache/abc/600.jpg');
-
-    const { queryByTestId, toJSON, UNSAFE_root } = render(
-      <CachedImage coverArtId="album1" size={600} />,
-    );
-    await flushEffects();
-
-    const img = getRenderedImageHandlers(toJSON, UNSAFE_root, 'file:///cache/abc/600.jpg');
-    await act(async () => {
-      img!.onError?.();
-      await Promise.resolve();
-    });
-
-    expect(mockDeleteCachedVariant).not.toHaveBeenCalled();
-    // Placeholder is always there; the Image layer is suppressed after
-    // the decode error so the placeholder shows through.
-    expect(queryByTestId('waveform-placeholder')).not.toBeNull();
-    expect(findImagesInJSON(toJSON)).toHaveLength(0);
-
-    await act(async () => {
-      jest.advanceTimersByTime(3000);
-      await Promise.resolve();
-    });
-    expect(mockCacheAllSizes).not.toHaveBeenCalled();
-  });
-
-  it('7b. offline error then reconnect lifts errorSuppress and re-renders cached file', async () => {
-    // Card mounts offline against a cached file. RNImage errors (e.g.
-    // corrupt local decode) → handleImageError's offline branch sets
-    // errorSuppress=true and bails. With the offline subscriber in place,
-    // flipping back to online clears errorSuppress so the next render
-    // can pick up the (still-on-disk) file URI without remount.
-    mockOfflineMode = true;
-    mockGetCachedImageUri.mockReturnValue('file:///cache/abc/600.jpg');
-
-    const { queryByTestId, toJSON, UNSAFE_root } = render(
-      <CachedImage coverArtId="album1" size={600} />,
-    );
-    await flushEffects();
-
-    const img = getRenderedImageHandlers(toJSON, UNSAFE_root, 'file:///cache/abc/600.jpg');
-    await act(async () => {
-      img!.onError?.();
-      await Promise.resolve();
-    });
-
-    // Stuck on placeholder while offline.
-    expect(findImagesInJSON(toJSON)).toHaveLength(0);
-    expect(queryByTestId('waveform-placeholder')).not.toBeNull();
-
-    // Reconnect → subscriber fires → errorSuppress lifted, reloadNonce
-    // bumps, cachedUri re-derives, file:// renders.
-    await act(async () => {
-      setMockOfflineMode(false);
-      await Promise.resolve();
-    });
-
-    const recovered = getRenderedImageHandlers(
-      toJSON,
-      UNSAFE_root,
-      'file:///cache/abc/600.jpg',
-    );
-    expect(recovered).not.toBeNull();
-  });
-
-  it('8. offline with valid cache renders the image layer on top of the placeholder', async () => {
-    mockOfflineMode = true;
-    mockGetCachedImageUri.mockReturnValue('file:///cache/abc/600.jpg');
-
-    const { queryByTestId, toJSON, UNSAFE_root } = render(
-      <CachedImage coverArtId="album1" size={600} />,
-    );
-    await flushEffects();
-
-    // Placeholder is always present; Image renders on top from the first
-    // frame because the URI is a trusted cached file.
-    expect(queryByTestId('waveform-placeholder')).not.toBeNull();
-    const img = getRenderedImageHandlers(toJSON, UNSAFE_root, 'file:///cache/abc/600.jpg');
-    expect(img).not.toBeNull();
-
-    // onLoad is idempotent for cached files (fadeAnim already 1).
-    await act(async () => {
-      img!.onLoad?.();
-      await Promise.resolve();
-    });
-    expect(queryByTestId('waveform-placeholder')).not.toBeNull();
-    // Image still rendered.
-    expect(findImagesInJSON(toJSON).some((n) => n.props.source.uri.startsWith('file://'))).toBe(true);
-  });
-
-  it('9. no cache + no coverArtId + no fallback: only the placeholder renders (never blank)', async () => {
-    const { queryByTestId, toJSON } = render(
-      <CachedImage coverArtId={undefined} size={600} />,
-    );
-    await flushEffects();
-
-    // Placeholder is always in the tree — this is the never-blank invariant.
-    expect(queryByTestId('waveform-placeholder')).not.toBeNull();
-    // No Image layer (nothing to render on top).
-    expect(findImagesInJSON(toJSON)).toHaveLength(0);
-  });
-
-  it('10. re-derives cachedUri after cacheAllSizes resolves (cell picks up the variant when it lands)', async () => {
-    // Start with a cache miss so the debounced effect fires.
-    mockGetCachedImageUri.mockReturnValueOnce(null).mockReturnValueOnce(null);
-
-    let resolveCache: () => void;
-    // The debounced call has a deferred resolver so the test can control
-    // when reloadNonce gets bumped.
-    mockCacheAllSizes.mockImplementationOnce(
-      () => new Promise<void>((r) => { resolveCache = r; }),
-    );
-
-    const { toJSON, UNSAFE_root } = render(<CachedImage coverArtId="late-land" size={50} />);
-    await flushEffects();
-
-    // Fire the debounce so cacheAllSizes is called.
-    await act(async () => {
-      jest.advanceTimersByTime(150);
-      await Promise.resolve();
-    });
-    expect(mockCacheAllSizes).toHaveBeenCalledWith('late-land');
-
-    // Before cacheAllSizes resolves, only the remote URL is rendered (cache
-    // still empty, no file:// image yet).
-    expect(
-      getRenderedImageHandlers(toJSON, UNSAFE_root, 'file:///cache/'),
-    ).toBeNull();
-
-    // Variant just landed on disk; subsequent reads return the file path.
-    mockGetCachedImageUri.mockReturnValue('file:///cache/late-land/50.jpg');
-
-    // Resolve the cacheAllSizes promise — the cell should bump reloadNonce
-    // and re-derive cachedUri.
-    await act(async () => {
-      resolveCache!();
-      await Promise.resolve();
-    });
-
-    const cachedImg = getRenderedImageHandlers(
-      toJSON,
-      UNSAFE_root,
-      'file:///cache/late-land/50.jpg',
-    );
-    expect(cachedImg).not.toBeNull();
-  });
-
-  // After two failures at a smaller size, fall back to the SOURCE_SIZE
-  // (600) URL instead of giving up to the placeholder. Some servers /
-  // proxies fail at smaller variants but serve the source fine; this
-  // recovers the card without user action.
-  it('11. source-size fallback fires after second failure at a smaller size', async () => {
     mockGetCachedImageUri.mockReturnValue(null);
-    mockCacheAllSizes.mockResolvedValue(undefined);
-    // Size-aware mock so we can verify the fallback ACTUALLY requested
-    // size=600 (and not the original 150).
-    mockGetCoverArtUrl.mockImplementation(
-      (id, size) => `https://example.com/cover.jpg?t=abc&id=${id}&s=${size}`,
-    );
-
-    const { toJSON, UNSAFE_root } = render(
-      <CachedImage coverArtId="failsAt150" size={150} />,
-    );
-    await flushEffects();
-
-    // First debounce → remote URL at requested size (150).
-    await act(async () => {
-      jest.advanceTimersByTime(150);
-      await Promise.resolve();
-    });
-    const first = getRenderedImageHandlers(toJSON, UNSAFE_root, 's=150');
-    expect(first).not.toBeNull();
-
-    // First error → one-shot retry scheduled.
-    await act(async () => {
-      first!.onError?.();
-      await Promise.resolve();
-    });
-
-    // Retry fires (still size=150 with cache-buster).
-    await act(async () => {
-      jest.advanceTimersByTime(2500);
-      await Promise.resolve();
-    });
-    const retry = getRenderedImageHandlers(toJSON, UNSAFE_root, '_r=');
-    expect(retry).not.toBeNull();
-    expect(retry!.source.uri).toMatch(/[?&]s=150(&|$)/);
-
-    // Second error — should swap to the SOURCE_SIZE (600) URL.
-    await act(async () => {
-      retry!.onError?.();
-      await Promise.resolve();
-    });
-
-    const fallback = getRenderedImageHandlers(toJSON, UNSAFE_root, '_src=');
-    expect(fallback).not.toBeNull();
-    expect(fallback!.source.uri).toMatch(/[?&]s=600(&|$)/);
+    const tree = render(<CachedImage coverArtId="abc" size={150} />);
+    expect(findImage(tree)).toBeNull();
+    expect(tree.getByTestId('waveform-placeholder')).toBeTruthy();
   });
 
-  // After the SOURCE_SIZE fallback ALSO fails (its own retry budget
-  // exhausted), the card finally settles on the placeholder.
-  it('12. source-size fallback exhaustion lands on placeholder', async () => {
+  it('renders no Image layer when isRemoteFailed is true', () => {
     mockGetCachedImageUri.mockReturnValue(null);
-    mockCacheAllSizes.mockResolvedValue(undefined);
+    mockIsRemoteFailed.mockReturnValue(true);
+    const tree = render(<CachedImage coverArtId="abc" size={150} />);
+    expect(findImage(tree)).toBeNull();
+    expect(tree.getByTestId('waveform-placeholder')).toBeTruthy();
+  });
 
-    const { queryByTestId, toJSON, UNSAFE_root } = render(
-      <CachedImage coverArtId="failsAt150" size={150} />,
+  it('renders only the placeholder when there is no coverArtId and no fallback', () => {
+    const tree = render(<CachedImage coverArtId={undefined} size={150} />);
+    expect(findImage(tree)).toBeNull();
+    expect(tree.getByTestId('waveform-placeholder')).toBeTruthy();
+    expect(mockEnsureCached).not.toHaveBeenCalled();
+  });
+
+  it('renders the fallbackUri when no coverArtId is provided', () => {
+    const tree = render(
+      <CachedImage coverArtId={undefined} size={150} fallbackUri="https://ext.example/img.jpg" />,
     );
-    await flushEffects();
+    expect(findImage(tree)?.uri).toBe('https://ext.example/img.jpg');
+  });
+});
 
-    await act(async () => {
-      jest.advanceTimersByTime(150);
-      await Promise.resolve();
+/* ------------------------------------------------------------------ */
+/*  Cache-update recovery                                              */
+/* ------------------------------------------------------------------ */
+
+describe('cache-update recovery', () => {
+  it('switches from REMOTE to LOCAL when the cache file lands', () => {
+    mockGetCachedImageUri.mockReturnValue(null);
+    const tree = render(<CachedImage coverArtId="abc" size={150} />);
+    expect(findImage(tree)?.uri).toContain('id=abc');
+
+    // Service downloaded the file; next sync lookup returns a file:// URI.
+    mockGetCachedImageUri.mockReturnValue('file:///cache/abc/150.jpg');
+    fireCacheUpdate();
+    expect(findImage(tree)?.uri).toBe('file:///cache/abc/150.jpg');
+  });
+
+  it('switches from PLACEHOLDER (remote-failed) back to LOCAL on cache update', () => {
+    mockGetCachedImageUri.mockReturnValue(null);
+    mockIsRemoteFailed.mockReturnValue(true);
+    const tree = render(<CachedImage coverArtId="abc" size={150} />);
+    expect(findImage(tree)).toBeNull();
+
+    // Service recovered: cache landed AND the remote-failed flag is gone.
+    mockIsRemoteFailed.mockReturnValue(false);
+    mockGetCachedImageUri.mockReturnValue('file:///cache/abc/150.jpg');
+    fireCacheUpdate();
+    expect(findImage(tree)?.uri).toBe('file:///cache/abc/150.jpg');
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Error handling                                                     */
+/* ------------------------------------------------------------------ */
+
+describe('decode errors', () => {
+  it('calls reportBadCache when a local URI fails to load, then falls through to REMOTE', () => {
+    mockGetCachedImageUri.mockReturnValue('file:///cache/abc/150.jpg');
+    const tree = render(<CachedImage coverArtId="abc" size={150} />);
+
+    // Simulate the Image layer failing to decode.
+    const img = tree.UNSAFE_queryAllByType(RNImage)[0];
+    act(() => {
+      img.props.onError();
     });
-    // Walk all the failure stages: requested-size first error → retry →
-    // requested-size second error → source-size fallback → source-size
-    // first error → retry → source-size second error → placeholder.
-    const fireErrorAndAdvance = async () => {
-      const all = findImagesInJSON(toJSON);
-      const handlers = getRenderedImageHandlers(
-        toJSON,
-        UNSAFE_root,
-        all[0]?.props?.source?.uri ?? '',
-      );
-      await act(async () => {
-        handlers!.onError?.();
-        await Promise.resolve();
-      });
-      await act(async () => {
-        jest.advanceTimersByTime(2500);
-        await Promise.resolve();
-      });
-    };
 
-    await fireErrorAndAdvance(); // first 150 error → retry
-    await fireErrorAndAdvance(); // retry 150 error → fallback to 600
-    await fireErrorAndAdvance(); // first 600 error → retry
-    // Last 600 retry error — placeholder.
-    const last = findImagesInJSON(toJSON)[0];
-    await act(async () => {
-      const handlers = getRenderedImageHandlers(
-        toJSON,
-        UNSAFE_root,
-        last.props.source.uri,
-      );
-      handlers!.onError?.();
-      await Promise.resolve();
+    expect(mockReportBadCache).toHaveBeenCalledWith('abc', 150);
+    expect(mockReportBadRemote).not.toHaveBeenCalled();
+
+    // Next render — localErroredRef is set so we skip the cached URI and
+    // fall through to the remote URL.
+    const after = findImage(tree);
+    expect(after?.uri).toContain('id=abc');
+  });
+
+  it('calls reportBadRemote when a remote URI fails to load', () => {
+    mockGetCachedImageUri.mockReturnValue(null);
+    const tree = render(<CachedImage coverArtId="abc" size={150} />);
+    const img = tree.UNSAFE_queryAllByType(RNImage)[0];
+    act(() => {
+      img.props.onError();
     });
+    expect(mockReportBadRemote).toHaveBeenCalledWith('abc');
+    expect(mockReportBadCache).not.toHaveBeenCalled();
+  });
 
-    expect(queryByTestId('waveform-placeholder')).not.toBeNull();
-    expect(findImagesInJSON(toJSON)).toHaveLength(0);
+  it('clears the local-error flag when the cache-update fires', () => {
+    mockGetCachedImageUri.mockReturnValue('file:///cache/abc/150.jpg');
+    const tree = render(<CachedImage coverArtId="abc" size={150} />);
+    const img = tree.UNSAFE_queryAllByType(RNImage)[0];
+    act(() => { img.props.onError(); });
+
+    // After fallthrough — remote.
+    expect(findImage(tree)?.uri).toContain('id=abc');
+
+    // Service redownloaded the file; cache lookup now returns it again.
+    fireCacheUpdate();
+    expect(findImage(tree)?.uri).toBe('file:///cache/abc/150.jpg');
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Sentinels                                                          */
+/* ------------------------------------------------------------------ */
+
+describe('sentinel cover-art ids', () => {
+  it('never contacts the image cache service for the starred-cover id', () => {
+    render(<CachedImage coverArtId="__STARRED__" size={150} />);
+    expect(mockEnsureCached).not.toHaveBeenCalled();
+    expect(mockGetCachedImageUri).not.toHaveBeenCalled();
+    expect(mockBuildRemoteImageUrl).not.toHaveBeenCalled();
+  });
+
+  it('never contacts the image cache service for the various-artists id', () => {
+    render(<CachedImage coverArtId="__VA__" size={150} />);
+    expect(mockEnsureCached).not.toHaveBeenCalled();
+    expect(mockGetCachedImageUri).not.toHaveBeenCalled();
+    expect(mockBuildRemoteImageUrl).not.toHaveBeenCalled();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Re-mount semantics                                                 */
+/* ------------------------------------------------------------------ */
+
+describe('id changes', () => {
+  it('resets local-error flag when the coverArtId changes mid-mount', () => {
+    mockGetCachedImageUri.mockImplementation((id) => `file:///cache/${id}/150.jpg`);
+    const tree = render(<CachedImage coverArtId="abc" size={150} />);
+
+    // Error on abc — flag goes up, switches to remote on next render.
+    let img = tree.UNSAFE_queryAllByType(RNImage)[0];
+    act(() => { img.props.onError(); });
+    expect(mockReportBadCache).toHaveBeenCalledWith('abc', 150);
+
+    // Re-render with a different id — flag resets, cached file for new
+    // id renders cleanly.
+    tree.rerender(<CachedImage coverArtId="xyz" size={150} />);
+    expect(findImage(tree)?.uri).toBe('file:///cache/xyz/150.jpg');
   });
 });

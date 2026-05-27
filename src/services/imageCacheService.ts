@@ -102,6 +102,16 @@ export const IMAGE_SIZES = [50, 150, 300, 600] as const;
  *  fails server-side. */
 export const SOURCE_SIZE = 600;
 
+/**
+ * Cover-art ids whose remote URL has been reported broken by a CachedImage
+ * instance since the last cache-update for that id. While an id is in this
+ * set, every CachedImage instance suppresses the REMOTE rendering path for
+ * that id and stays on PLACEHOLDER until a fresh file lands on disk (which
+ * clears the entry automatically) or a coarse reset fires (clearImageCache,
+ * offline → online transition).
+ */
+const failedRemoteIds = new Set<string>();
+
 /** Sizes generated locally from the SOURCE_SIZE image. */
 const RESIZE_SIZES = [300, 150, 50] as const;
 
@@ -200,6 +210,11 @@ export function subscribeImageCacheUpdate(
  * the rest.
  */
 function notifyImageCacheUpdate(coverArtId: string): void {
+  // A fresh on-disk variant (or a manual clear of the remote-failed
+  // flag) is unambiguous recovery — drop any prior remote-failed
+  // marker so subscribed CachedImage instances re-evaluate their URI
+  // choice on the next render.
+  failedRemoteIds.delete(coverArtId);
   const listeners = cacheUpdateListeners.get(coverArtId);
   if (!listeners || listeners.size === 0) return;
   for (const listener of listeners) {
@@ -464,6 +479,22 @@ export function deferredImageCacheInit(): Promise<void> {
 offlineModeStore.subscribe((state, prev) => {
   if (state.offlineMode === prev.offlineMode) return;
   if (state.offlineMode) return;
+  // Coming back online: drop every remote-failed marker so CachedImage
+  // instances get a fresh shot at the server URL while the repair pass
+  // works in the background. We notify the listener set per id so any
+  // mounted CachedImages re-derive immediately rather than waiting for
+  // the next render.
+  if (failedRemoteIds.size > 0) {
+    const ids = Array.from(failedRemoteIds);
+    failedRemoteIds.clear();
+    for (const id of ids) {
+      const listeners = cacheUpdateListeners.get(id);
+      if (!listeners) continue;
+      for (const listener of listeners) {
+        try { listener(); } catch { /* swallow */ }
+      }
+    }
+  }
   if (imageCacheStore.getState().incompleteCount <= 0) return;
   // _layout.tsx restarts connectivity monitoring on offline→online; wait
   // for the first post-resume ping so the repair pass acts on confirmed
@@ -802,6 +833,7 @@ export async function repairIncompleteImagesAsync(source: string = 'auto'): Prom
 export function getCachedImageUri(
   coverArtId: string,
   size: number,
+  opts: { sourceFallback?: boolean } = {},
 ): string | null {
   if (!coverArtId) return null;
 
@@ -816,6 +848,30 @@ export function getCachedImageUri(
     if (file.exists) {
       uriCache.set(key, file.uri);
       return file.uri;
+    }
+  }
+  // Source-size fallback: when the requested variant isn't on disk but
+  // the 600px source IS, return the source URI. Covers two real-world
+  // cases: (a) servers/proxies that fail to serve resized variants but
+  // serve the original, and (b) the brief window between the source
+  // download landing and the local resize pipeline finishing the smaller
+  // variants. The renderer scales the source down — better than a
+  // placeholder.
+  //
+  // Opt-in: internal callers (e.g. cacheAllSizes' "all sizes present"
+  // check) want strict semantics so they can tell whether the resize
+  // pipeline has actually completed. Render-time consumers pass
+  // `{ sourceFallback: true }` to get the lenient lookup.
+  if (opts.sourceFallback && size !== SOURCE_SIZE) {
+    const sourceKey = uriCacheKey(coverArtId, SOURCE_SIZE);
+    const sourceCached = uriCache.get(sourceKey);
+    if (sourceCached) return sourceCached;
+    for (const ext of EXTENSIONS) {
+      const file = new File(subDir, `${SOURCE_SIZE}${ext}`);
+      if (file.exists) {
+        uriCache.set(sourceKey, file.uri);
+        return file.uri;
+      }
     }
   }
   return null;
@@ -909,6 +965,90 @@ export function cacheAllSizes(coverArtId: string): Promise<void> {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Public component-facing API                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Idempotent "ensure this cover is being cached." The component-facing
+ * trigger — no debounce, no microtask, just a thin wrapper over
+ * `cacheAllSizes` whose returned promise is discarded.
+ *
+ * Sentinel and offline guards live here so callers don't have to repeat
+ * them. The service-side dedup in `cacheAllSizes` (pendingResolvers +
+ * downloading set + downloadQueue includes-check) collapses bursts of
+ * concurrent calls for the same id to a single download.
+ */
+export function ensureCached(coverArtId: string): void {
+  if (!coverArtId) return;
+  if (isSentinelCoverArtId(coverArtId)) return;
+  if (offlineModeStore.getState().offlineMode) return;
+  void cacheAllSizes(coverArtId);
+}
+
+/**
+ * The component reports that the cached file at the requested size
+ * failed to decode. The service deletes the variant (file + DB row +
+ * URI map) and re-enqueues a download. The component will re-render on
+ * the next `notifyImageCacheUpdate` when a fresh file lands.
+ */
+export function reportBadCache(coverArtId: string, size: number): void {
+  if (!coverArtId) return;
+  logImageCache(`reportBadCache id=${coverArtId} size=${size}`);
+  deleteCachedVariant(coverArtId, size);
+  if (!offlineModeStore.getState().offlineMode) {
+    void cacheAllSizes(coverArtId);
+  }
+}
+
+/**
+ * The component reports that the remote URL for this cover failed to
+ * load. The service flags the id in `failedRemoteIds` so every other
+ * CachedImage instance for the same id stops attempting the remote URL,
+ * then fires the cache-update channel so subscribed components re-derive
+ * their render state. The flag clears on the next successful
+ * notifyImageCacheUpdate for the id (a fresh file landed) or on a
+ * coarser reset (clearImageCache, offline → online).
+ */
+export function reportBadRemote(coverArtId: string): void {
+  if (!coverArtId) return;
+  if (failedRemoteIds.has(coverArtId)) return;
+  logImageCache(`reportBadRemote id=${coverArtId}`);
+  failedRemoteIds.add(coverArtId);
+  // Notify subscribers directly — bypass `notifyImageCacheUpdate` so the
+  // helper's "delete from failedRemoteIds" branch doesn't undo what we
+  // just did.
+  const listeners = cacheUpdateListeners.get(coverArtId);
+  if (!listeners) return;
+  for (const listener of listeners) {
+    try { listener(); } catch { /* swallow */ }
+  }
+}
+
+/**
+ * Sync query — is this cover's remote URL currently in the failed set?
+ * Component reads this on every render to decide whether to try the
+ * server URL.
+ */
+export function isRemoteFailed(coverArtId: string): boolean {
+  if (!coverArtId) return false;
+  return failedRemoteIds.has(coverArtId);
+}
+
+/**
+ * Build the server URL for a cover at a given size. Thin re-export of
+ * `subsonicService.getCoverArtUrl` so consumers that render images can
+ * import everything they need from one module (the cache service is the
+ * single source of truth for "what URI should I show?"). Returns null
+ * when no server URL can be constructed (no coverArtId / no auth).
+ */
+export function buildRemoteImageUrl(
+  coverArtId: string,
+  size: number,
+): string | null {
+  return getCoverArtUrl(coverArtId, size);
+}
+
+/* ------------------------------------------------------------------ */
 /*  Queue processing                                                   */
 /* ------------------------------------------------------------------ */
 
@@ -938,6 +1078,47 @@ async function processQueue(): Promise<void> {
 }
 
 /**
+ * Per-id retry schedulers for the in-memory download path. A failed
+ * download leaves a setTimeout in this map; on fire the timer re-calls
+ * cacheAllSizes (idempotent), and clears the entry on success. Bounded
+ * by RETRY_BACKOFFS_MS so a permanently-broken id stops attempting
+ * after a few retries — long-lived recovery is via AppState 'active'
+ * and offline→online repair passes which already exist.
+ */
+const pendingRetries = new Map<string, ReturnType<typeof setTimeout>>();
+const retryAttempts = new Map<string, number>();
+const RETRY_BACKOFFS_MS = [5_000, 15_000, 60_000] as const;
+
+function scheduleRetry(coverArtId: string): void {
+  if (isSentinelCoverArtId(coverArtId)) return;
+  if (offlineModeStore.getState().offlineMode) return;
+  const attempt = retryAttempts.get(coverArtId) ?? 0;
+  if (attempt >= RETRY_BACKOFFS_MS.length) {
+    logImageCache(`retry-give-up id=${coverArtId} attempts=${attempt}`);
+    return;
+  }
+  // Already a retry pending — let it fire.
+  if (pendingRetries.has(coverArtId)) return;
+  const delay = RETRY_BACKOFFS_MS[attempt];
+  retryAttempts.set(coverArtId, attempt + 1);
+  logImageCache(`retry-scheduled id=${coverArtId} attempt=${attempt + 1} delay-ms=${delay}`);
+  const timer = setTimeout(() => {
+    pendingRetries.delete(coverArtId);
+    if (offlineModeStore.getState().offlineMode) return;
+    // Quick exit if the cover landed via some other path in the meantime.
+    const allCached = IMAGE_SIZES.every(
+      (s) => getCachedImageUri(coverArtId, s) != null,
+    );
+    if (allCached) {
+      retryAttempts.delete(coverArtId);
+      return;
+    }
+    void cacheAllSizes(coverArtId);
+  }, delay);
+  pendingRetries.set(coverArtId, timer);
+}
+
+/**
  * Worker loop: dequeue one coverArtId at a time and download + resize.
  */
 async function processNext(): Promise<void> {
@@ -947,9 +1128,11 @@ async function processNext(): Promise<void> {
       continue;
     }
     downloading.add(coverArtId);
+    let threw = false;
     try {
       await downloadAndCacheImage(coverArtId);
     } catch {
+      threw = true;
       /* individual image failure -- continue with the rest */
     } finally {
       downloading.delete(coverArtId);
@@ -962,6 +1145,19 @@ async function processNext(): Promise<void> {
       // when partial-variant failures leave some rows unwritten.
       imageCacheStore.getState().recalculateFromDb();
       resolveWaiters(coverArtId);
+      // Schedule a timed retry when the source download threw OR the
+      // cover is still incomplete after a non-throwing run (the resize
+      // pipeline took partial-failure variantFailureCount steps that
+      // didn't surface as exceptions). On success we clear the counter
+      // so the next fresh download starts from attempt 0.
+      const stillMissing = !IMAGE_SIZES.every(
+        (s) => getCachedImageUri(coverArtId, s) != null,
+      );
+      if (threw || stillMissing) {
+        scheduleRetry(coverArtId);
+      } else {
+        retryAttempts.delete(coverArtId);
+      }
     }
   }
 }
@@ -1437,6 +1633,10 @@ function teardownImageCacheState({ reinit }: { reinit: boolean }): void {
   uriCache.clear();
   downloadQueue.length = 0;
   downloading.clear();
+  failedRemoteIds.clear();
+  for (const timer of pendingRetries.values()) clearTimeout(timer);
+  pendingRetries.clear();
+  retryAttempts.clear();
   resolveAllWaiters();
   if (cacheDir) {
     try { cacheDir.delete(); } catch { /* best-effort */ }
