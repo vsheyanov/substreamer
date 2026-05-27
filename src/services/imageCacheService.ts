@@ -1657,27 +1657,23 @@ function teardownImageCacheState({ reinit }: { reinit: boolean }): void {
 }
 
 /**
- * Delete all cached images and recreate the cache directory.
- * Returns the number of bytes freed — derived from the DB aggregate
- * (cheap single SELECT) rather than a recursive directory walk.
+ * Delete all cached images and (by default) recreate the cache directory.
+ * Returns the number of bytes freed — derived from the DB aggregate (cheap
+ * single SELECT) rather than a recursive directory walk.
+ *
+ * Pass `{ reinit: false }` from the logout flow — the session is over and
+ * the next `initImageCache` will come from the auth flow on re-login;
+ * re-arming the AppState listener here would fire repair passes against
+ * an unauthenticated server.
  */
-export async function clearImageCache(): Promise<number> {
+export async function clearImageCache(
+  opts: { reinit?: boolean } = {},
+): Promise<number> {
+  const reinit = opts.reinit ?? true;
   const freedBytes = hydrateImageCacheAggregates().totalBytes;
-  teardownImageCacheState({ reinit: true });
-  logImageCache(`clearImageCache freed-bytes=${freedBytes}`);
+  teardownImageCacheState({ reinit });
+  logImageCache(`clearImageCache reinit=${reinit} freed-bytes=${freedBytes}`);
   return freedBytes;
-}
-
-/**
- * Wipe every trace of the image cache for logout. Same as
- * {@link clearImageCache} but skips re-init — the session is over and the
- * next `initImageCache` will come from the auth flow. Called exclusively
- * from `resetAllStores()`, paired with `teardownImageCache()` which
- * removes the AppState listener.
- */
-export function wipeImageCacheForLogout(): void {
-  teardownImageCacheState({ reinit: false });
-  logImageCache('wipeImageCacheForLogout done');
 }
 
 /**
