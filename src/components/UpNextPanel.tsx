@@ -29,7 +29,7 @@ export interface UpNextPanelProps {
   panGesture: PanGesture;
   currentTrack: Child;
   queue: Child[];
-  currentTrackIndex: number;
+  currentTrackIndex: number | null;
   colors: ThemeColors;
   /** Muted-primary variant for the active queue row highlight. */
   queueColors: ThemeColors;
