@@ -25,6 +25,7 @@ import { DownloadedIcon } from '../components/DownloadedIcon';
 import { EmptyState } from '../components/EmptyState';
 import { GenreChipSection } from '../components/GenreChipSection';
 import { PlaylistCard } from '../components/PlaylistCard';
+import { ResumeBookmarksSection } from '../components/ResumeBookmarksSection';
 import WaveformLogo from '../components/WaveformLogo';
 import { computeStreaks, dateKey } from '../hooks/usePlaybackAnalytics';
 import { useTheme } from '../hooks/useTheme';
@@ -551,6 +552,7 @@ export function HomeScreen() {
             </Pressable>
           </View>
           <GenreChipSection genreCounts={genreCounts} colors={colors} />
+          <ResumeBookmarksSection />
           {downloadedOnly && (
             <>
               <DownloadedAlbumSection albums={downloadedAlbums} colors={colors} />

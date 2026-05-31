@@ -30,6 +30,7 @@ LogBox.ignoreLogs([
 ]);
 
 import { AddToPlaylistSheet } from '../components/AddToPlaylistSheet';
+import { BookmarkNameSheet } from '../components/BookmarkNameSheet';
 import { ThemedAlertHost } from '../components/ThemedAlertHost';
 import { DARK_MIX, GRADIENT_LOCATIONS, GRADIENT_MIX_CURVE, GradientBackground, LIGHT_MIX } from '../components/GradientBackground';
 import { mixHexColors } from '../utils/colors';
@@ -694,6 +695,10 @@ export default function RootLayout() {
           options={{ ...blurHeaderOptions, title: i18n.t('shares'), headerBackTitle: i18n.t('back') }}
         />
         <Stack.Screen
+          name="bookmarks"
+          options={{ ...blurHeaderOptions, title: i18n.t('bookmarks'), headerBackTitle: i18n.t('back') }}
+        />
+        <Stack.Screen
           name="my-listening"
           options={{ ...blurHeaderOptions, title: i18n.t('myListening'), headerBackTitle: i18n.t('back') }}
         />
@@ -746,6 +751,9 @@ export default function RootLayout() {
 
       {/* Global sleep timer sheet driven by sleepTimerStore */}
       <SleepTimerSheet />
+
+      {/* Global bookmark name/rename sheet driven by bookmarkSheetStore */}
+      <BookmarkNameSheet />
 
       {/* Global themed alert host driven by themedAlertStore — decouples
           alert Modal lifecycle from any caller's React subtree so chained

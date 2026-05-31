@@ -97,6 +97,7 @@ import { replaceAllScrobbles } from '../../store/persistence/scrobbleTable';
 import { mbidOverrideStore } from '../../store/mbidOverrideStore';
 import { scrobbleExclusionStore } from '../../store/scrobbleExclusionStore';
 import { backupStore } from '../../store/backupStore';
+import { bookmarksStore } from '../../store/bookmarksStore';
 import {
   createBackup,
   listBackups,
@@ -152,6 +153,7 @@ beforeEach(() => {
   });
   mbidOverrideStore.setState({ overrides: {} });
   scrobbleExclusionStore.setState({ excludedAlbums: {}, excludedArtists: {}, excludedPlaylists: {} });
+  bookmarksStore.setState({ bookmarks: {} });
   backupStore.setState({ autoBackupEnabled: false, lastBackupTimes: {} });
   setAuth();
 });
@@ -176,7 +178,7 @@ describe('makeBackupIdentityKey', () => {
 });
 
 describe('createBackup', () => {
-  it('compresses scrobbles and writes v5 meta with identity + device tag', async () => {
+  it('compresses scrobbles and writes v6 meta with identity + device tag', async () => {
     completedScrobbleStore.setState({
       completedScrobbles: [
         { id: 's1', song: { id: 'track-1' } as any, time: 1000 },
@@ -195,7 +197,7 @@ describe('createBackup', () => {
     // sharing a cloud folder don't collide on the millisecond.
     expect(stem).toMatch(/^backup-.*-11111111\.meta\.json$/);
     const meta = JSON.parse(metaEntries[0][1].content);
-    expect(meta.version).toBe(5);
+    expect(meta.version).toBe(6);
     expect(meta.serverUrl).toBe(TEST_SERVER);
     expect(meta.username).toBe(TEST_USER);
     expect(meta.deviceId).toBe('11111111-2222-3333-4444-555555555555');
@@ -204,6 +206,7 @@ describe('createBackup', () => {
     expect(meta.scrobbles).toEqual({ itemCount: 1, sizeBytes: 42 });
     expect(meta.mbidOverrides).toBeNull();
     expect(meta.scrobbleExclusions).toBeNull();
+    expect(meta.bookmarks).toBeNull();
   });
 
   it('throws when no active session', async () => {
@@ -245,6 +248,30 @@ describe('createBackup', () => {
       .filter(([k]) => k.endsWith('.meta.json'));
     const meta = JSON.parse(metaEntries[0][1].content);
     expect(meta.scrobbleExclusions).toEqual({ itemCount: 2, sizeBytes: 25 });
+  });
+
+  it('compresses bookmarks when present', async () => {
+    bookmarksStore.setState({
+      bookmarks: {
+        'bk-1': {
+          id: 'bk-1',
+          name: 'Tuesday Mid Morning',
+          createdAt: 1000,
+          queue: [{ id: 't1', title: 'T1', isDir: false } as any],
+          currentIndex: 0,
+          positionSec: 12,
+        },
+      },
+    });
+    mockCompressToFile.mockResolvedValue({ bytes: 64 });
+
+    await createBackup();
+
+    expect(mockCompressToFile).toHaveBeenCalledTimes(1);
+    const metaEntries = Array.from(mockFileInstances.entries())
+      .filter(([k]) => k.endsWith('.meta.json'));
+    const meta = JSON.parse(metaEntries[0][1].content);
+    expect(meta.bookmarks).toEqual({ itemCount: 1, sizeBytes: 64 });
   });
 
   it('creates all three datasets when all have data', async () => {
@@ -462,6 +489,8 @@ describe('restoreBackup', () => {
     mbidOverrideSizeBytes: 0,
     scrobbleExclusionCount: 0,
     scrobbleExclusionSizeBytes: 0,
+    bookmarkCount: 0,
+    bookmarkSizeBytes: 0,
     serverUrl: TEST_SERVER,
     username: TEST_USER,
     deviceId: null,
@@ -1047,6 +1076,8 @@ describe('restoreBackup — merge mode', () => {
       mbidOverrideSizeBytes: 0,
       scrobbleExclusionCount: 0,
       scrobbleExclusionSizeBytes: 0,
+      bookmarkCount: 0,
+      bookmarkSizeBytes: 0,
       serverUrl: TEST_SERVER,
       username: TEST_USER,
       deviceId: 'remote-device',
@@ -1082,6 +1113,8 @@ describe('restoreBackup — merge mode', () => {
       mbidOverrideSizeBytes: 0,
       scrobbleExclusionCount: 0,
       scrobbleExclusionSizeBytes: 0,
+      bookmarkCount: 0,
+      bookmarkSizeBytes: 0,
       serverUrl: TEST_SERVER,
       username: TEST_USER,
       deviceId: 'remote-device',
@@ -1118,6 +1151,8 @@ describe('restoreBackup — merge mode', () => {
       mbidOverrideSizeBytes: 0,
       scrobbleExclusionCount: 1,
       scrobbleExclusionSizeBytes: 0,
+      bookmarkCount: 0,
+      bookmarkSizeBytes: 0,
       serverUrl: TEST_SERVER,
       username: TEST_USER,
       deviceId: 'remote-device',
@@ -1151,6 +1186,8 @@ describe('restoreBackup — merge mode', () => {
       mbidOverrideSizeBytes: 0,
       scrobbleExclusionCount: 0,
       scrobbleExclusionSizeBytes: 0,
+      bookmarkCount: 0,
+      bookmarkSizeBytes: 0,
       serverUrl: TEST_SERVER,
       username: TEST_USER,
       deviceId: null,

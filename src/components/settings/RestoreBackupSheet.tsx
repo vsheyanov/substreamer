@@ -127,6 +127,9 @@ export function RestoreBackupSheet({
     if (entry.scrobbleExclusionCount > 0) {
       parts.push(t('backupExclusionCount', { count: entry.scrobbleExclusionCount }));
     }
+    if (entry.bookmarkCount > 0) {
+      parts.push(t('backupBookmarkCount', { count: entry.bookmarkCount }));
+    }
     const dateStr = new Date(entry.createdAt).toLocaleString(i18next.language, {
       dateStyle: 'medium',
       timeStyle: 'short',
@@ -174,8 +177,12 @@ export function RestoreBackupSheet({
     if (entry.mbidOverrideCount > 0) {
       details.push(t('backupMbidOverrideCount', { count: entry.mbidOverrideCount }));
     }
+    if (entry.bookmarkCount > 0) {
+      details.push(t('backupBookmarkCount', { count: entry.bookmarkCount }));
+    }
     const totalBytes =
-      entry.scrobbleSizeBytes + entry.mbidOverrideSizeBytes + entry.scrobbleExclusionSizeBytes;
+      entry.scrobbleSizeBytes + entry.mbidOverrideSizeBytes + entry.scrobbleExclusionSizeBytes
+      + entry.bookmarkSizeBytes;
     return (
       <Pressable
         key={entry.stem}

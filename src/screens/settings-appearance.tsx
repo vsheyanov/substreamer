@@ -8,6 +8,7 @@ import { AccentColorCard } from '../components/settings/AccentColorCard';
 import { AlbumSortOrderCard } from '../components/settings/AlbumSortOrderCard';
 import { ArtistAlbumSortOrderCard } from '../components/settings/ArtistAlbumSortOrderCard';
 import { ArtistPlayModeCard } from '../components/settings/ArtistPlayModeCard';
+import { BookmarksCard } from '../components/settings/BookmarksCard';
 import { DateFormatCard } from '../components/settings/DateFormatCard';
 import { FavoritesLayoutCard } from '../components/settings/FavoritesLayoutCard';
 import { FiltersCard } from '../components/settings/FiltersCard';
@@ -29,6 +30,7 @@ export function SettingsAppearanceScreen() {
       >
         <ThemeCard />
         <AccentColorCard />
+        <BookmarksCard />
         <LanguageCard />
         <AlbumSortOrderCard />
         <ArtistAlbumSortOrderCard />

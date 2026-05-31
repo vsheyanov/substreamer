@@ -50,6 +50,10 @@ import { useTheme } from '../hooks/useTheme';
 import { ThemedAlert } from '../components/ThemedAlert';
 import { useThemedAlert } from '../hooks/useThemedAlert';
 import { toggleStar } from '../services/moreOptionsService';
+import { buildAutoName, capturePlayerSnapshot, commitBookmark } from '../services/bookmarkService';
+import { bookmarkSheetStore } from '../store/bookmarkSheetStore';
+import { bookmarksStore } from '../store/bookmarksStore';
+import { playbackToastStore } from '../store/playbackToastStore';
 import { offlineModeStore } from '../store/offlineModeStore';
 import {
   clearQueue,
@@ -527,6 +531,49 @@ const FavoriteButton = memo(function FavoriteButton({
 });
 
 /* ------------------------------------------------------------------ */
+/*  Bookmark button                                                    */
+/* ------------------------------------------------------------------ */
+
+const BookmarkButton = memo(function BookmarkButton({ colors }: { colors: ThemeColors }) {
+  const { t, i18n } = useTranslation();
+  const autoName = bookmarksStore((s) => s.autoName);
+  const queueLength = playerStore((s) => s.queue.length);
+  const disabled = queueLength === 0;
+
+  const handlePress = useCallback(() => {
+    // Capture the queue/position NOW, at tap time, regardless of which path we
+    // take — the manual-name sheet commits this same snapshot on Save.
+    const snapshot = capturePlayerSnapshot();
+    if (!snapshot) return;
+    const existingNames = Object.values(bookmarksStore.getState().bookmarks).map((b) => b.name);
+    const suggested = buildAutoName(t, i18n.language, existingNames);
+    if (autoName) {
+      commitBookmark(snapshot, suggested);
+      playbackToastStore.getState().flashSuccess(t('bookmarkSaved'));
+    } else {
+      bookmarkSheetStore.getState().showCreate(suggested, snapshot);
+    }
+  }, [autoName, t, i18n.language]);
+
+  return (
+    <Pressable
+      onPress={handlePress}
+      disabled={disabled}
+      hitSlop={8}
+      accessibilityRole="button"
+      accessibilityLabel={t('addBookmark')}
+      style={({ pressed }) => [
+        styles.favoriteButton,
+        pressed && !disabled && styles.pressed,
+        disabled && styles.disabled,
+      ]}
+    >
+      <Ionicons name="bookmark-outline" size={24} color={colors.textSecondary} />
+    </Pressable>
+  );
+});
+
+/* ------------------------------------------------------------------ */
 /*  Player content (hero, controls) — "Player" tab                     */
 /* ------------------------------------------------------------------ */
 
@@ -720,7 +767,9 @@ const PlayerContent = memo(function PlayerContent({
           {showSleepTimer && <SleepTimerButton />}
         </View>
         <View style={styles.secondaryCenter} />
-        <View style={styles.controlSideRight} />
+        <View style={styles.controlSideRight}>
+          <BookmarkButton colors={colors} />
+        </View>
       </View>
 
       <View style={styles.playerSpacer} />

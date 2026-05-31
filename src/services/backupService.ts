@@ -10,10 +10,12 @@ import { completedScrobbleStore } from '../store/completedScrobbleStore';
 import { deviceIdentityStore, getDeviceShortId } from '../store/deviceIdentityStore';
 import { mbidOverrideStore } from '../store/mbidOverrideStore';
 import { scrobbleExclusionStore } from '../store/scrobbleExclusionStore';
+import { bookmarksStore } from '../store/bookmarksStore';
 
 import { type CompletedScrobble } from '../store/completedScrobbleStore';
 import { type MbidOverride } from '../store/mbidOverrideStore';
 import { type ScrobbleExclusion } from '../store/scrobbleExclusionStore';
+import { type PlayQueueBookmark } from '../store/bookmarksStore';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -58,7 +60,24 @@ interface BackupMetaV5 {
   scrobbleExclusions: BackupDatasetMeta | null;
 }
 
-type BackupMeta = BackupMetaV3 | BackupMetaV4 | BackupMetaV5;
+interface BackupMetaV6 {
+  version: 6;
+  createdAt: string;
+  serverUrl: string;
+  username: string;
+  /** Stable per-install UUID of the creating device — canonical match key. */
+  deviceId: string;
+  /** OS-returned device name (`Device.deviceName`) at backup time. */
+  deviceName: string | null;
+  /** Human-readable display label at backup time (snapshot, not live). */
+  deviceLabel: string;
+  scrobbles: BackupDatasetMeta | null;
+  mbidOverrides: BackupDatasetMeta | null;
+  scrobbleExclusions: BackupDatasetMeta | null;
+  bookmarks: BackupDatasetMeta | null;
+}
+
+type BackupMeta = BackupMetaV3 | BackupMetaV4 | BackupMetaV5 | BackupMetaV6;
 
 export interface BackupEntry {
   createdAt: string;
@@ -68,6 +87,8 @@ export interface BackupEntry {
   mbidOverrideSizeBytes: number;
   scrobbleExclusionCount: number;
   scrobbleExclusionSizeBytes: number;
+  bookmarkCount: number;
+  bookmarkSizeBytes: number;
   stem: string;
   serverUrl: string | null;
   username: string | null;
@@ -91,6 +112,8 @@ export interface RestoreCounts {
   mbidOverrideSkipped: number;
   scrobbleExclusionCount: number;
   scrobbleExclusionSkipped: number;
+  bookmarkCount: number;
+  bookmarkSkipped: number;
 }
 
 /* ------------------------------------------------------------------ */
@@ -144,6 +167,10 @@ function mbidFileName(stem: string): string {
 
 function exclusionsFileName(stem: string): string {
   return `${stem}.exclusions.gz`;
+}
+
+function bookmarksFileName(stem: string): string {
+  return `${stem}.bookmarks.gz`;
 }
 
 /**
@@ -223,6 +250,7 @@ export async function createBackup(): Promise<void> {
   let scrobblesMeta: BackupDatasetMeta | null = null;
   let mbidMeta: BackupDatasetMeta | null = null;
   let exclusionsMeta: BackupDatasetMeta | null = null;
+  let bookmarksMeta: BackupDatasetMeta | null = null;
 
   const scrobbles = completedScrobbleStore.getState().completedScrobbles;
   if (scrobbles.length > 0) {
@@ -245,10 +273,16 @@ export async function createBackup(): Promise<void> {
     exclusionsMeta = await writeBackupDataset(exclusionsFileName(stem), exclusionsData, exclusionCount);
   }
 
-  if (!scrobblesMeta && !mbidMeta && !exclusionsMeta) return;
+  const bookmarks = bookmarksStore.getState().bookmarks;
+  const bookmarkCount = Object.keys(bookmarks).length;
+  if (bookmarkCount > 0) {
+    bookmarksMeta = await writeBackupDataset(bookmarksFileName(stem), bookmarks, bookmarkCount);
+  }
 
-  const meta: BackupMetaV5 = {
-    version: 5,
+  if (!scrobblesMeta && !mbidMeta && !exclusionsMeta && !bookmarksMeta) return;
+
+  const meta: BackupMetaV6 = {
+    version: 6,
     createdAt: new Date().toISOString(),
     serverUrl,
     username,
@@ -258,6 +292,7 @@ export async function createBackup(): Promise<void> {
     scrobbles: scrobblesMeta,
     mbidOverrides: mbidMeta,
     scrobbleExclusions: exclusionsMeta,
+    bookmarks: bookmarksMeta,
   };
 
   const metaFile = new File(backupDir, metaFileName(stem));
@@ -293,14 +328,15 @@ export async function listBackups(
       const raw = await metaFile.text();
       const meta: BackupMeta = JSON.parse(raw);
 
-      if (meta.version !== 3 && meta.version !== 4 && meta.version !== 5) continue;
+      if (meta.version !== 3 && meta.version !== 4 && meta.version !== 5 && meta.version !== 6) continue;
 
       const stem = name.replace(/\.meta\.json$/, '');
 
       const hasScrobbles = meta.scrobbles && new File(backupDir, scrobblesFileName(stem)).exists;
       const hasMbid = meta.mbidOverrides && new File(backupDir, mbidFileName(stem)).exists;
       const hasExclusions = meta.scrobbleExclusions && new File(backupDir, exclusionsFileName(stem)).exists;
-      if (!hasScrobbles && !hasMbid && !hasExclusions) continue;
+      const hasBookmarks = (meta.version === 6) && meta.bookmarks && new File(backupDir, bookmarksFileName(stem)).exists;
+      if (!hasScrobbles && !hasMbid && !hasExclusions && !hasBookmarks) continue;
 
       all.push({
         createdAt: meta.createdAt,
@@ -310,12 +346,14 @@ export async function listBackups(
         mbidOverrideSizeBytes: meta.mbidOverrides?.sizeBytes ?? 0,
         scrobbleExclusionCount: meta.scrobbleExclusions?.itemCount ?? 0,
         scrobbleExclusionSizeBytes: meta.scrobbleExclusions?.sizeBytes ?? 0,
+        bookmarkCount: meta.version === 6 ? (meta.bookmarks?.itemCount ?? 0) : 0,
+        bookmarkSizeBytes: meta.version === 6 ? (meta.bookmarks?.sizeBytes ?? 0) : 0,
         stem,
-        serverUrl: meta.version === 4 || meta.version === 5 ? meta.serverUrl : null,
-        username: meta.version === 4 || meta.version === 5 ? meta.username : null,
-        deviceId: meta.version === 5 ? meta.deviceId : null,
-        deviceName: meta.version === 5 ? meta.deviceName : null,
-        deviceLabel: meta.version === 5 ? meta.deviceLabel : null,
+        serverUrl: meta.version === 4 || meta.version === 5 || meta.version === 6 ? meta.serverUrl : null,
+        username: meta.version === 4 || meta.version === 5 || meta.version === 6 ? meta.username : null,
+        deviceId: (meta.version === 5 || meta.version === 6) ? meta.deviceId : null,
+        deviceName: (meta.version === 5 || meta.version === 6) ? meta.deviceName : null,
+        deviceLabel: (meta.version === 5 || meta.version === 6) ? meta.deviceLabel : null,
       });
     } catch {
       continue;
@@ -364,6 +402,8 @@ export async function restoreBackup(
   let mbidOverrideSkipped = 0;
   let scrobbleExclusionCount = 0;
   let scrobbleExclusionSkipped = 0;
+  let bookmarkCount = 0;
+  let bookmarkSkipped = 0;
 
   if (entry.scrobbleCount > 0) {
     const dataFile = new File(backupDir, scrobblesFileName(entry.stem));
@@ -449,10 +489,37 @@ export async function restoreBackup(
     }
   }
 
+  if (entry.bookmarkCount > 0) {
+    const dataFile = new File(backupDir, bookmarksFileName(entry.stem));
+    if (!dataFile.exists) {
+      throw new Error('Bookmark backup data file not found');
+    }
+    const json = await decompressFromFile(dataFile.uri);
+    const data: Record<string, PlayQueueBookmark> = JSON.parse(json);
+    if (mode === 'merge') {
+      const result = bookmarksStore.getState().mergeBookmarks(data);
+      bookmarkCount = result.added;
+      bookmarkSkipped = result.skipped;
+    } else {
+      // Replace mode trusts the file wholesale, but a bookmark carries a nested
+      // Child[] queue the UI iterates — drop malformed entries so a corrupt or
+      // hand-edited backup can't crash the bookmarks list on render.
+      const valid: Record<string, PlayQueueBookmark> = {};
+      for (const [id, value] of Object.entries(data)) {
+        if (value && typeof value === 'object' && value.id && Array.isArray(value.queue)) {
+          valid[id] = value;
+        }
+      }
+      bookmarksStore.setState({ bookmarks: valid });
+      bookmarkCount = Object.keys(valid).length;
+    }
+  }
+
   return {
     scrobbleCount, scrobbleSkipped,
     mbidOverrideCount, mbidOverrideSkipped,
     scrobbleExclusionCount, scrobbleExclusionSkipped,
+    bookmarkCount, bookmarkSkipped,
   };
 }
 
@@ -500,6 +567,7 @@ export async function pruneBackups(keep = MAX_BACKUPS): Promise<void> {
       scrobblesFileName(entry.stem),
       mbidFileName(entry.stem),
       exclusionsFileName(entry.stem),
+      bookmarksFileName(entry.stem),
     ];
     for (const name of filesToRemove) {
       try {
@@ -546,7 +614,7 @@ async function cleanUpOrphanedFiles(): Promise<void> {
     if (name.endsWith('.tmp')) continue;
     if (name.endsWith('.meta.json')) continue;
 
-    const stem = name.replace(/\.(scrobbles|mbid|exclusions)\.gz$/, '');
+    const stem = name.replace(/\.(scrobbles|mbid|exclusions|bookmarks)\.gz$/, '');
     if (stem !== name && !metaStems.has(stem)) {
       try { new File(backupDir, name).delete(); } catch { /* best-effort */ }
     }

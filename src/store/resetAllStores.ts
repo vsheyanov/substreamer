@@ -24,6 +24,7 @@ import { authStore } from './authStore';
 import { autoOfflineStore } from './autoOfflineStore';
 import { backupStore } from './backupStore';
 import { batteryOptimizationStore } from './batteryOptimizationStore';
+import { bookmarksStore } from './bookmarksStore';
 import { completedScrobbleStore } from './completedScrobbleStore';
 import { favoritesStore } from './favoritesStore';
 import { genreStore } from './genreStore';
@@ -77,6 +78,7 @@ const allStores = [
   autoOfflineStore,
   backupStore,
   batteryOptimizationStore,
+  bookmarksStore,
   completedScrobbleStore,
   favoritesStore,
   genreStore,
