@@ -432,13 +432,14 @@ describe('PlayerView', () => {
   });
 
   it('renders shuffle button in queue tab', () => {
-    const { getByLabelText, getByTestId } = render(<PlayerView />);
+    const { getByLabelText, getAllByTestId } = render(<PlayerView />);
 
     act(() => {
       fireEvent.press(getByLabelText('Queue'));
     });
 
-    expect(getByTestId('shuffle-button')).toBeTruthy();
+    // Shuffle now appears both in the player controls and the queue header.
+    expect(getAllByTestId('shuffle-button').length).toBeGreaterThanOrEqual(2);
   });
 
   it('calls share queue when share button pressed', () => {
