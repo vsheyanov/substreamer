@@ -712,8 +712,8 @@ describe('fetchCustomMix', () => {
 
   it('fetches a single genre with decade filter', async () => {
     mockGetRandomSongsFiltered.mockResolvedValue(songs);
-    const result = await fetchCustomMix(['Rock'], 1990, 1999, true);
-    expect(result).toEqual(songs);
+    const result = await fetchCustomMix(['Rock'], [{ fromYear: 1990, toYear: 1999 }], true);
+    expect(result).toEqual(expect.arrayContaining(songs));
     expect(mockGetRandomSongsFiltered).toHaveBeenCalledWith({
       size: 20,
       genre: 'Rock',
@@ -724,8 +724,8 @@ describe('fetchCustomMix', () => {
 
   it('fetches a single genre without decade filter', async () => {
     mockGetRandomSongsFiltered.mockResolvedValue(songs);
-    const result = await fetchCustomMix(['Rock'], undefined, undefined, true);
-    expect(result).toEqual(songs);
+    const result = await fetchCustomMix(['Rock'], [], true);
+    expect(result).toEqual(expect.arrayContaining(songs));
     expect(mockGetRandomSongsFiltered).toHaveBeenCalledWith({
       size: 20,
       genre: 'Rock',
@@ -739,8 +739,8 @@ describe('fetchCustomMix', () => {
   // getRandomSongsFiltered with the year window and no genre.
   it('fetches with era filter only when no genres are selected', async () => {
     mockGetRandomSongsFiltered.mockResolvedValue(songs);
-    const result = await fetchCustomMix([], 2000, 2009, true);
-    expect(result).toEqual(songs);
+    const result = await fetchCustomMix([], [{ fromYear: 2000, toYear: 2009 }], true);
+    expect(result).toEqual(expect.arrayContaining(songs));
     expect(mockGetRandomSongsFiltered).toHaveBeenCalledTimes(1);
     expect(mockGetRandomSongsFiltered).toHaveBeenCalledWith({
       size: 20,
@@ -754,27 +754,27 @@ describe('fetchCustomMix', () => {
       .mockResolvedValueOnce([makeSong({ id: 'a' })])
       .mockResolvedValueOnce([makeSong({ id: 'b' })]);
 
-    const result = await fetchCustomMix(['Rock', 'Jazz'], undefined, undefined, true);
+    const result = await fetchCustomMix(['Rock', 'Jazz'], [], true);
     expect(result.length).toBe(2);
     expect(mockGetRandomSongsFiltered).toHaveBeenCalledTimes(2);
   });
 
   it('uses offline songs when not online', async () => {
     mockGetOfflineSongsByGenre.mockReturnValue(songs);
-    const result = await fetchCustomMix(['Rock'], undefined, undefined, false);
+    const result = await fetchCustomMix(['Rock'], [], false);
     expect(result.length).toBeLessThanOrEqual(20);
     expect(mockGetOfflineSongsByGenre).toHaveBeenCalledWith('Rock');
   });
 
   it('handles null API response gracefully', async () => {
     mockGetRandomSongsFiltered.mockResolvedValue(null);
-    const result = await fetchCustomMix(['Rock'], undefined, undefined, true);
+    const result = await fetchCustomMix(['Rock'], [], true);
     expect(result).toEqual([]);
   });
 
   it('uses custom listLength for single genre', async () => {
     mockGetRandomSongsFiltered.mockResolvedValue(songs);
-    await fetchCustomMix(['Rock'], 1990, 1999, true, 50);
+    await fetchCustomMix(['Rock'], [{ fromYear: 1990, toYear: 1999 }], true, 50);
     expect(mockGetRandomSongsFiltered).toHaveBeenCalledWith({
       size: 50,
       genre: 'Rock',
@@ -785,7 +785,7 @@ describe('fetchCustomMix', () => {
 
   it('splits custom listLength across multiple genres', async () => {
     mockGetRandomSongsFiltered.mockResolvedValue([makeSong()]);
-    await fetchCustomMix(['Rock', 'Jazz', 'Pop'], undefined, undefined, true, 50);
+    await fetchCustomMix(['Rock', 'Jazz', 'Pop'], [], true, 50);
     // Math.ceil(50 / 3) = 17
     expect(mockGetRandomSongsFiltered).toHaveBeenCalledWith(
       expect.objectContaining({ size: 17, genre: 'Rock' }),
@@ -795,7 +795,7 @@ describe('fetchCustomMix', () => {
   it('uses custom listLength for offline slice', async () => {
     const manySongs = Array.from({ length: 100 }, (_, i) => makeSong({ id: `s${i}` }));
     mockGetOfflineSongsByGenre.mockReturnValue(manySongs);
-    const result = await fetchCustomMix(['Rock'], undefined, undefined, false, 50);
+    const result = await fetchCustomMix(['Rock'], [], false, 50);
     expect(result.length).toBe(50);
   });
 
@@ -805,8 +805,51 @@ describe('fetchCustomMix', () => {
     mockGetRandomSongsFiltered
       .mockResolvedValueOnce(genreA)
       .mockResolvedValueOnce(genreB);
-    const result = await fetchCustomMix(['Rock', 'Jazz'], undefined, undefined, true, 15);
+    const result = await fetchCustomMix(['Rock', 'Jazz'], [], true, 15);
     expect(result.length).toBe(15);
+  });
+
+  it('queries each selected decade separately (non-contiguous eras)', async () => {
+    mockGetRandomSongsFiltered.mockResolvedValue([makeSong()]);
+    await fetchCustomMix(
+      ['Rock'],
+      [{ fromYear: 1970, toYear: 1979 }, { fromYear: 1990, toYear: 1999 }],
+      true,
+    );
+    // 1 genre × 2 decades = 2 separate queries (a single year window can't
+    // express 70s + 90s without also pulling in the 80s).
+    expect(mockGetRandomSongsFiltered).toHaveBeenCalledTimes(2);
+    expect(mockGetRandomSongsFiltered).toHaveBeenCalledWith(
+      expect.objectContaining({ genre: 'Rock', fromYear: 1970, toYear: 1979 }),
+    );
+    expect(mockGetRandomSongsFiltered).toHaveBeenCalledWith(
+      expect.objectContaining({ genre: 'Rock', fromYear: 1990, toYear: 1999 }),
+    );
+  });
+
+  it('fans out across the genre × decade cross-product', async () => {
+    mockGetRandomSongsFiltered.mockResolvedValue([makeSong()]);
+    await fetchCustomMix(
+      ['Rock', 'Jazz'],
+      [{ fromYear: 1980, toYear: 1989 }, { fromYear: 2000, toYear: 2009 }],
+      true,
+    );
+    // 2 genres × 2 decades = 4 combos
+    expect(mockGetRandomSongsFiltered).toHaveBeenCalledTimes(4);
+  });
+
+  it('filters offline songs by selected decades client-side', async () => {
+    mockGetOfflineSongsByGenre.mockReturnValue([
+      makeSong({ id: 'old', year: 1975 }),
+      makeSong({ id: 'mid', year: 1985 }),
+      makeSong({ id: 'new', year: 1995 }),
+    ]);
+    const result = await fetchCustomMix(
+      ['Rock'],
+      [{ fromYear: 1970, toYear: 1979 }, { fromYear: 1990, toYear: 1999 }],
+      false,
+    );
+    expect(result.map((s) => s.id).sort()).toEqual(['new', 'old']); // 1985 excluded
   });
 });
 
@@ -893,16 +936,33 @@ describe('getTimeGradient', () => {
 /* ------------------------------------------------------------------ */
 
 describe('DECADES', () => {
-  it('has 7 entries starting with "Any"', () => {
-    expect(DECADES).toHaveLength(7);
+  it('starts with "Any" (no era filter)', () => {
     expect(DECADES[0].label).toBe('Any');
     expect(DECADES[0].fromYear).toBeUndefined();
     expect(DECADES[0].toYear).toBeUndefined();
   });
 
-  it('each decade has a 10-year range', () => {
-    for (const decade of DECADES.slice(1)) {
+  it('named decades (50s–20s) span exactly 10 years', () => {
+    for (const decade of DECADES.filter((d) => /^\d0s$/.test(d.label))) {
       expect(decade.toYear! - decade.fromYear!).toBe(9);
     }
+  });
+
+  it('includes 50s and 60s', () => {
+    const labels = DECADES.map((d) => d.label);
+    expect(labels).toContain('50s');
+    expect(labels).toContain('60s');
+  });
+
+  it('has an "Earlier" shortcut for everything before the 50s', () => {
+    const earlier = DECADES.find((d) => d.label === 'Earlier');
+    expect(earlier).toBeDefined();
+    expect(earlier!.toYear).toBe(1949);
+  });
+
+  it('has a "Recent" shortcut covering the last several years', () => {
+    const recent = DECADES.find((d) => d.label === 'Recent');
+    expect(recent).toBeDefined();
+    expect(recent!.toYear! - recent!.fromYear!).toBeGreaterThanOrEqual(4);
   });
 });

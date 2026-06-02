@@ -467,55 +467,69 @@ export async function fetchMixSongs(strategy: FetchStrategy, listLength = 20): P
 /*  Custom mix builder                                                 */
 /* ------------------------------------------------------------------ */
 
+/** A selected era. Both bounds undefined means "any era". */
+export interface DecadeRange {
+  fromYear?: number;
+  toYear?: number;
+}
+
 export async function fetchCustomMix(
   genres: string[],
-  fromYear?: number,
-  toYear?: number,
+  decades: DecadeRange[],
   isOnline = true,
   listLength = 20,
 ): Promise<Child[]> {
+  // Only ranges with real bounds constrain the era; ignore "any" entries.
+  const ranges = decades.filter(
+    (d) => d.fromYear !== undefined && d.toYear !== undefined,
+  );
+
   if (!isOnline) {
-    const results: Child[] = [];
-    for (const genre of genres) {
-      const songs = getOfflineSongsByGenre(genre);
-      results.push(...songs);
+    let pool: Child[] = [];
+    if (genres.length === 0) {
+      pool = [...getOfflineSongsAll()];
+    } else {
+      for (const genre of genres) pool.push(...getOfflineSongsByGenre(genre));
     }
-    return shuffleArray(results).slice(0, listLength);
+    // Decades can be non-contiguous (e.g. 70s + 90s), so filter the offline
+    // pool client-side against any selected range rather than a single window.
+    if (ranges.length > 0) {
+      pool = pool.filter(
+        (s) =>
+          s.year != null &&
+          ranges.some((r) => s.year! >= r.fromYear! && s.year! <= r.toYear!),
+      );
+    }
+    return shuffleArray(pool).slice(0, listLength);
   }
 
-  // Era-only (no genre): one Subsonic call with the year window.
-  if (genres.length === 0) {
-    const songs = await getRandomSongsFiltered({
-      size: listLength,
-      fromYear,
-      toYear,
-    });
-    return songs ?? [];
+  // Online: fan out across the genre × era cross-product. Each axis falls
+  // back to a single "any" slot so genre-only, era-only, and both work the
+  // same way. Non-contiguous decades each get their own server query.
+  const genreSlots: (string | undefined)[] = genres.length > 0 ? genres : [undefined];
+  const eraSlots: DecadeRange[] = ranges.length > 0 ? ranges : [{}];
+
+  const combos: Array<{ genre?: string } & DecadeRange> = [];
+  for (const genre of genreSlots) {
+    for (const era of eraSlots) {
+      combos.push({ genre, fromYear: era.fromYear, toYear: era.toYear });
+    }
   }
 
-  if (genres.length === 1) {
-    const songs = await getRandomSongsFiltered({
-      size: listLength,
-      genre: genres[0],
-      fromYear,
-      toYear,
-    });
-    return songs ?? [];
-  }
-
-  // Multiple genres: split evenly
-  const perGenre = Math.ceil(listLength / genres.length);
-  const results: Child[] = [];
-  for (const genre of genres) {
-    const songs = await getRandomSongsFiltered({
-      size: perGenre,
-      genre,
-      fromYear,
-      toYear,
-    });
-    if (songs) results.push(...songs);
-  }
-  return shuffleArray(results).slice(0, listLength);
+  const perCombo = Math.max(1, Math.ceil(listLength / combos.length));
+  const batches = await Promise.all(
+    combos.map((c) =>
+      getRandomSongsFiltered({
+        size: perCombo,
+        genre: c.genre,
+        fromYear: c.fromYear,
+        toYear: c.toYear,
+      })
+        .then((songs) => songs ?? [])
+        .catch(() => []),
+    ),
+  );
+  return shuffleArray(batches.flat()).slice(0, listLength);
 }
 
 /* ------------------------------------------------------------------ */
@@ -543,12 +557,44 @@ export function getTimeGradient(hour: number): [string, string] {
 /*  Decade definitions for the builder                                 */
 /* ------------------------------------------------------------------ */
 
-export const DECADES = [
+export interface BuilderDecade {
+  /** Stable identity + default display string. */
+  label: string;
+  /** i18n key for word labels (Earlier/Recent); numeric decades render `label`. */
+  i18nKey?: string;
+  /** Both undefined means "any era". */
+  fromYear?: number;
+  toYear?: number;
+}
+
+// "Recent" tracks the rolling last ~5 years, so its range is resolved at module
+// load from the current year rather than hard-coded.
+const CURRENT_YEAR = new Date().getFullYear();
+
+export const DECADES: BuilderDecade[] = [
   { label: 'Any', fromYear: undefined, toYear: undefined },
+  { label: 'Earlier', i18nKey: 'decadeEarlier', fromYear: 0, toYear: 1949 },
+  { label: '50s', fromYear: 1950, toYear: 1959 },
+  { label: '60s', fromYear: 1960, toYear: 1969 },
   { label: '70s', fromYear: 1970, toYear: 1979 },
   { label: '80s', fromYear: 1980, toYear: 1989 },
   { label: '90s', fromYear: 1990, toYear: 1999 },
   { label: '00s', fromYear: 2000, toYear: 2009 },
   { label: '10s', fromYear: 2010, toYear: 2019 },
   { label: '20s', fromYear: 2020, toYear: 2029 },
-] as const;
+  { label: 'Recent', i18nKey: 'decadeRecent', fromYear: CURRENT_YEAR - 4, toYear: CURRENT_YEAR + 1 },
+];
+
+/** Decades the builder offers as multi-select pills — drops the "Any" sentinel
+    (no decades selected already means "any era", mirroring genres). */
+export const SELECTABLE_DECADES: BuilderDecade[] = DECADES.filter(
+  (d) => d.fromYear !== undefined,
+);
+
+/** Map selected decade labels to the year ranges `fetchCustomMix` expects. */
+export function decadeRangesForLabels(labels: string[]): DecadeRange[] {
+  return SELECTABLE_DECADES.filter((d) => labels.includes(d.label)).map((d) => ({
+    fromYear: d.fromYear,
+    toYear: d.toYear,
+  }));
+}

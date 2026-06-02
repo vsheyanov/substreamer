@@ -2,7 +2,9 @@ import { StyleSheet, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { DownloadBanner } from './DownloadBanner';
-import { MiniPlayer } from './MiniPlayer';
+import { PlayerPhoneMini } from './player/PlayerPhoneMini';
+import { PlayerTabletPortraitMini } from './player/PlayerTabletPortraitMini';
+import { useIsTabletPortrait } from '../hooks/useIsTabletPortrait';
 import { useLayoutMode } from '../hooks/useLayoutMode';
 import { authStore } from '../store/authStore';
 import { musicCacheStore } from '../store/musicCacheStore';
@@ -12,12 +14,12 @@ import { playerStore } from '../store/playerStore';
  * Single shared bottom-chrome stack rendered both inside the tabs
  * `renderTabBar` callback and as a footer on every non-tab Stack screen.
  *
- * Composes `<DownloadBanner />` above `<MiniPlayer />` with **independent**
+ * Composes `<DownloadBanner />` above `<PlayerPhoneMini />` with **independent**
  * visibility:
  *   - banner is visible whenever the download queue has any
  *     downloading/queued/error rows;
- *   - MiniPlayer is visible whenever there is a current track AND the
- *     layout is compact (wide layouts don't show the MiniPlayer).
+ *   - PlayerPhoneMini is visible whenever there is a current track AND the
+ *     layout is compact (wide layouts don't show the mini player).
  *
  * Either piece can be on while the other is off — e.g. a download
  * starts before the user plays anything, or the user clears the play
@@ -39,6 +41,7 @@ interface BottomChromeProps {
 
 export function BottomChrome({ withSafeAreaPadding = false }: BottomChromeProps = {}) {
   const isWide = useLayoutMode() === 'wide';
+  const isTabletPortrait = useIsTabletPortrait();
   const isLoggedIn = authStore((s) => s.isLoggedIn);
   const hasCurrentTrack = playerStore((s) => s.currentTrack !== null);
   // Mirrors `DownloadBanner`'s own filter so the two can't drift. Counts
@@ -52,7 +55,7 @@ export function BottomChrome({ withSafeAreaPadding = false }: BottomChromeProps 
   const insets = useSafeAreaInsets();
 
   if (!isLoggedIn) return null;
-  // On wide layouts the MiniPlayer never renders, so the chrome only has a
+  // On wide layouts the mini player never renders, so the chrome only has a
   // reason to mount when there are downloads.
   if (isWide && !hasDownloads) return null;
   // On compact layouts we need EITHER a track or an active download.
@@ -66,7 +69,9 @@ export function BottomChrome({ withSafeAreaPadding = false }: BottomChromeProps 
       ]}
     >
       {hasDownloads && <DownloadBanner />}
-      {!isWide && hasCurrentTrack && <MiniPlayer />}
+      {!isWide && hasCurrentTrack && (
+        isTabletPortrait ? <PlayerTabletPortraitMini /> : <PlayerPhoneMini />
+      )}
     </View>
   );
 }

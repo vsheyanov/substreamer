@@ -14,69 +14,59 @@ import {
 } from 'react-native';
 import Animated, {
   Easing,
-  cancelAnimation,
   interpolate,
   useAnimatedStyle,
   useSharedValue,
-  withRepeat,
   withTiming,
-  runOnJS,
 } from 'react-native-reanimated';
 import { Pressable as GHPressable } from 'react-native-gesture-handler';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 
-import { AlbumInfoContent } from '../components/AlbumInfoContent';
-import { LyricsContent } from '../components/LyricsContent';
-import { CachedImage } from '../components/CachedImage';
-import { EmptyState } from '../components/EmptyState';
-import { MarqueeText } from '../components/MarqueeText';
-import { MoreOptionsButton } from '../components/MoreOptionsButton';
-import { PlaybackRateButton } from '../components/PlaybackRateButton';
-import { PlayerProgressBar } from '../components/PlayerProgressBar';
-import { PlayerTabBar, type PlayerTab } from '../components/PlayerTabBar';
-import { RepeatButton } from '../components/RepeatButton';
-import { ShuffleButton } from '../components/ShuffleButton';
-import { SkipIntervalButton } from '../components/SkipIntervalButton';
-import { SleepTimerButton } from '../components/SleepTimerButton';
-import { SleepTimerCapsule } from '../components/SleepTimerCapsule';
-import { QueueItemRow } from '../components/QueueItemRow';
-import { closeOpenRow } from '../components/SwipeableRow';
-import { type ThemeColors } from '../constants/theme';
-import { useCanSkip } from '../hooks/useCanSkip';
-import { useImagePalette } from '../hooks/useImagePalette';
-import { useIsStarred } from '../hooks/useIsStarred';
-import { useTheme } from '../hooks/useTheme';
-import { ThemedAlert } from '../components/ThemedAlert';
-import { useThemedAlert } from '../hooks/useThemedAlert';
-import { toggleStar } from '../services/moreOptionsService';
-import { buildAutoName, capturePlayerSnapshot, commitBookmark } from '../services/bookmarkService';
-import { bookmarkSheetStore } from '../store/bookmarkSheetStore';
-import { bookmarksStore } from '../store/bookmarksStore';
-import { playbackToastStore } from '../store/playbackToastStore';
-import { offlineModeStore } from '../store/offlineModeStore';
+import { AlbumInfoContent } from '@/components/AlbumInfoContent';
+import { LyricsContent } from '@/components/LyricsContent';
+import { BookmarkButton } from '@/components/BookmarkButton';
+import { CachedImage } from '@/components/CachedImage';
+import { FavoriteButton } from '@/components/FavoriteButton';
+import { EmptyState } from '@/components/EmptyState';
+import { MarqueeText } from '@/components/MarqueeText';
+import { MoreOptionsButton } from '@/components/MoreOptionsButton';
+import { PlaybackRateButton } from '@/components/PlaybackRateButton';
+import { PlayerProgressBar } from '@/components/PlayerProgressBar';
+import { PlayerTabBar, type PlayerTab } from '@/components/PlayerTabBar';
+import { RepeatButton } from '@/components/RepeatButton';
+import { ShuffleButton } from '@/components/ShuffleButton';
+import { ShuffleOverlay } from '@/components/ShuffleOverlay';
+import { SkipIntervalButton } from '@/components/SkipIntervalButton';
+import { SleepTimerButton } from '@/components/SleepTimerButton';
+import { SleepTimerCapsule } from '@/components/SleepTimerCapsule';
+import { QueueItemRow } from '@/components/QueueItemRow';
+import { closeOpenRow } from '@/components/SwipeableRow';
+import { type ThemeColors } from '@/constants/theme';
+import { useCanSkip } from '@/hooks/useCanSkip';
+import { useImagePalette } from '@/hooks/useImagePalette';
+import { usePlayerActions } from '@/hooks/usePlayerActions';
+import { useShuffleOverlay } from '@/hooks/useShuffleOverlay';
+import { useTheme } from '@/hooks/useTheme';
+import { offlineModeStore } from '@/store/offlineModeStore';
 import {
   clearQueue,
   retryPlayback,
-  seekTo,
-  shuffleQueue,
   skipToNext,
   skipToPrevious,
-  skipToTrack,
   togglePlayPause,
-} from '../services/playerService';
-import { sanitizeBiographyText } from '../utils/formatters';
-import { type Child } from '../services/subsonicService';
-import { usePlayerAlbumInfo } from '../hooks/usePlayerAlbumInfo';
-import { usePlayerLyrics } from '../hooks/usePlayerLyrics';
-import { playbackSettingsStore } from '../store/playbackSettingsStore';
-import { createShareStore } from '../store/createShareStore';
-import { moreOptionsStore } from '../store/moreOptionsStore';
-import { playerStore } from '../store/playerStore';
-import { mixHexColors } from '../utils/colors';
+} from '@/services/playerService';
+import { sanitizeBiographyText } from '@/utils/formatters';
+import { type Child } from '@/services/subsonicService';
+import { usePlayerAlbumInfo } from '@/hooks/usePlayerAlbumInfo';
+import { usePlayerLyrics } from '@/hooks/usePlayerLyrics';
+import { playbackSettingsStore } from '@/store/playbackSettingsStore';
+import { moreOptionsStore } from '@/store/moreOptionsStore';
+import { playerStore } from '@/store/playerStore';
+import { mixHexColors } from '@/utils/colors';
 
 
-import { absoluteFill } from '../utils/styles';
+import { absoluteFill } from '@/utils/styles';
 const HERO_PADDING = 32;
 const HERO_COVER_SIZE = 600;
 const HEADER_BAR_HEIGHT = Platform.OS === 'ios' ? 44 : 56;
@@ -89,10 +79,9 @@ const TAB_SLIDE_DISTANCE = 12;
  *  handed a fresh object on every parent re-render. */
 const QUEUE_CONTENT_CONTAINER_STYLE = { paddingBottom: 12 } as const;
 
-export function PlayerView() {
+export function PlayerPhonePortrait() {
   const { colors } = useTheme();
   const { t } = useTranslation();
-  const { alert } = useThemedAlert();
   const insets = useSafeAreaInsets();
   const navigation = useNavigation();
   const router = useRouter();
@@ -216,7 +205,7 @@ export function PlayerView() {
         currentTrack ? (
           <MoreOptionsButton
             onPress={() =>
-              moreOptionsStore.getState().show({ type: 'song', item: currentTrack }, 'player')
+              moreOptionsStore.getState().show({ type: 'song', item: currentTrack }, 'player-phone-portrait')
             }
             color={colors.textPrimary}
           />
@@ -224,84 +213,29 @@ export function PlayerView() {
     });
   }, [currentTrack, navigation, onClose, colors.textPrimary]);
 
-  const handleSeek = useCallback((seconds: number) => {
-    seekTo(seconds);
-  }, []);
-
-  const handleQueueItemPress = useCallback((index: number) => {
-    skipToTrack(index);
-  }, []);
-
-  const handleQueueItemLongPress = useCallback((track: Child) => {
-    moreOptionsStore.getState().show({ type: 'song', item: track }, 'player');
-  }, []);
-
-  const handleClearQueue = useCallback(() => {
-    alert(
-      t('clearQueue'),
-      t('clearQueueMessage'),
-      [
-        { text: t('cancel'), style: 'cancel' },
-        {
-          text: t('clear'),
-          style: 'destructive',
-          onPress: () => {
-            onClose();
-            setTimeout(() => {
-              clearQueue();
-            }, 350);
-          },
-        },
-      ],
-    );
+  const onClearConfirmed = useCallback(() => {
+    onClose();
+    setTimeout(() => clearQueue(), 350);
   }, [onClose]);
 
-  // --- Shuffle overlay state ---
-  const [shuffling, setShuffling] = useState(false);
-  const overlayOpacity = useSharedValue(0);
-  const spinAnim = useSharedValue(0);
+  const {
+    handleSeek,
+    handleQueueItemPress,
+    handleQueueItemLongPress,
+    handleShareQueue,
+    handleClearQueue,
+  } = usePlayerActions({ source: 'player-phone-portrait', onClearConfirmed });
+
+  const {
+    shuffling,
+    handleShuffle,
+    overlayStyle,
+    spinStyle,
+  } = useShuffleOverlay();
 
   const gradientAnimatedStyle = useAnimatedStyle(() => ({
     opacity: gradientOpacity.value,
   }));
-
-  const overlayAnimatedStyle = useAnimatedStyle(() => ({
-    opacity: overlayOpacity.value,
-  }));
-
-  const spinStyle = useAnimatedStyle(() => ({
-    transform: [{ rotate: `${interpolate(spinAnim.value, [0, 1], [0, 360])}deg` }],
-  }));
-
-  const handleShuffle = useCallback(async () => {
-    if (shuffling) return;
-    setShuffling(true);
-    spinAnim.value = 0;
-
-    overlayOpacity.value = withTiming(1, { duration: 250 });
-    spinAnim.value = withRepeat(
-      withTiming(1, { duration: 800, easing: Easing.linear }),
-      -1,
-    );
-
-    const MIN_DISPLAY = 2000;
-    await Promise.all([
-      shuffleQueue(),
-      new Promise<void>((r) => setTimeout(r, MIN_DISPLAY)),
-    ]);
-
-    cancelAnimation(spinAnim);
-    overlayOpacity.value = withTiming(0, { duration: 300 }, (finished) => {
-      if (finished) runOnJS(setShuffling)(false);
-    });
-  }, [shuffling, overlayOpacity, spinAnim]);
-
-  const handleShareQueue = useCallback(() => {
-    const ids = queue.map((t) => t.id);
-    if (ids.length > 0) {
-      createShareStore.getState().showQueue(ids);
-    }
-  }, [queue]);
 
   // Muted primary for active queue item highlight
   const queueColors = useMemo(() => ({
@@ -368,7 +302,7 @@ export function PlayerView() {
           <Stack.Toolbar placement="right">
             <Stack.Toolbar.Button
               icon="ellipsis"
-              onPress={() => moreOptionsStore.getState().show({ type: 'song', item: currentTrack! }, 'player')}
+              onPress={() => moreOptionsStore.getState().show({ type: 'song', item: currentTrack! }, 'player-phone-portrait')}
               hidden={!currentTrack}
             />
           </Stack.Toolbar>
@@ -405,6 +339,8 @@ export function PlayerView() {
               colors={colors}
               queueLoading={queueLoading}
               handleSeek={handleSeek}
+              handleShuffle={handleShuffle}
+              shuffling={shuffling}
             />
           </Animated.View>
 
@@ -469,109 +405,16 @@ export function PlayerView() {
         </View>
 
         {/* Shuffle overlay */}
-        {shuffling && (
-          <Animated.View
-            style={[styles.shuffleOverlay, overlayAnimatedStyle]}
-            pointerEvents="auto"
-          >
-            <View style={[styles.shuffleCard, { backgroundColor: colors.card }]}>
-              <Animated.View style={spinStyle}>
-                <Ionicons name="shuffle" size={32} color={colors.primary} />
-              </Animated.View>
-              <Text style={[styles.shuffleText, { color: colors.textPrimary }]}>
-                {t('shuffling')}
-              </Text>
-            </View>
-          </Animated.View>
-        )}
+        <ShuffleOverlay
+          visible={shuffling}
+          overlayStyle={overlayStyle}
+          spinStyle={spinStyle}
+          colors={colors}
+        />
       </View>
     </>
   );
 }
-
-/* ------------------------------------------------------------------ */
-/*  Favorite button                                                    */
-/* ------------------------------------------------------------------ */
-
-const FavoriteButton = memo(function FavoriteButton({
-  trackId,
-  colors,
-}: {
-  trackId: string;
-  colors: { red: string; textSecondary: string };
-}) {
-  const { t } = useTranslation();
-  const starred = useIsStarred('song', trackId);
-  const offlineMode = offlineModeStore((s) => s.offlineMode);
-
-  const handleToggle = useCallback(() => {
-    toggleStar('song', trackId);
-  }, [trackId]);
-
-  return (
-    <Pressable
-      onPress={handleToggle}
-      disabled={offlineMode}
-      hitSlop={8}
-      accessibilityRole="button"
-      accessibilityLabel={starred ? t('removeFromFavorites') : t('addToFavorites')}
-      style={({ pressed }) => [
-        styles.favoriteButton,
-        pressed && !offlineMode && styles.pressed,
-        offlineMode && styles.disabled,
-      ]}
-    >
-      <Ionicons
-        name={starred ? 'heart' : 'heart-outline'}
-        size={24}
-        color={starred ? colors.red : colors.textSecondary}
-      />
-    </Pressable>
-  );
-});
-
-/* ------------------------------------------------------------------ */
-/*  Bookmark button                                                    */
-/* ------------------------------------------------------------------ */
-
-const BookmarkButton = memo(function BookmarkButton({ colors }: { colors: ThemeColors }) {
-  const { t, i18n } = useTranslation();
-  const autoName = bookmarksStore((s) => s.autoName);
-  const queueLength = playerStore((s) => s.queue.length);
-  const disabled = queueLength === 0;
-
-  const handlePress = useCallback(() => {
-    // Capture the queue/position NOW, at tap time, regardless of which path we
-    // take — the manual-name sheet commits this same snapshot on Save.
-    const snapshot = capturePlayerSnapshot();
-    if (!snapshot) return;
-    const existingNames = Object.values(bookmarksStore.getState().bookmarks).map((b) => b.name);
-    const suggested = buildAutoName(t, i18n.language, existingNames);
-    if (autoName) {
-      commitBookmark(snapshot, suggested);
-      playbackToastStore.getState().flashSuccess(t('bookmarkSaved'));
-    } else {
-      bookmarkSheetStore.getState().showCreate(suggested, snapshot);
-    }
-  }, [autoName, t, i18n.language]);
-
-  return (
-    <Pressable
-      onPress={handlePress}
-      disabled={disabled}
-      hitSlop={8}
-      accessibilityRole="button"
-      accessibilityLabel={t('addBookmark')}
-      style={({ pressed }) => [
-        styles.favoriteButton,
-        pressed && !disabled && styles.pressed,
-        disabled && styles.disabled,
-      ]}
-    >
-      <Ionicons name="bookmark-outline" size={24} color={colors.textSecondary} />
-    </Pressable>
-  );
-});
 
 /* ------------------------------------------------------------------ */
 /*  Player content (hero, controls) — "Player" tab                     */
@@ -582,6 +425,8 @@ interface PlayerContentProps {
   colors: ThemeColors;
   queueLoading: boolean;
   handleSeek: (seconds: number) => void;
+  handleShuffle: () => void;
+  shuffling: boolean;
 }
 
 const PlayerContent = memo(function PlayerContent({
@@ -589,6 +434,8 @@ const PlayerContent = memo(function PlayerContent({
   colors,
   queueLoading,
   handleSeek,
+  handleShuffle,
+  shuffling,
 }: PlayerContentProps) {
   const { t } = useTranslation();
   const { height: windowHeight, width: windowWidth } = useWindowDimensions();
@@ -599,6 +446,7 @@ const PlayerContent = memo(function PlayerContent({
   const bufferedPosition = playerStore((s) => s.bufferedPosition);
   const error = playerStore((s) => s.error);
   const retrying = playerStore((s) => s.retrying);
+  const queueLength = playerStore((s) => s.queue.length);
 
   const showSkipInterval = playbackSettingsStore((s) => s.showSkipIntervalButtons);
   const showSleepTimer = playbackSettingsStore((s) => s.showSleepTimerButton);
@@ -672,7 +520,7 @@ const PlayerContent = memo(function PlayerContent({
               {currentTrack.artist ?? t('unknownArtist')}
             </Text>
           </View>
-          <FavoriteButton trackId={currentTrack.id} colors={colors} />
+          <FavoriteButton trackId={currentTrack.id} style={styles.favoriteButton} />
         </View>
       </View>
 
@@ -691,11 +539,21 @@ const PlayerContent = memo(function PlayerContent({
         />
       </View>
 
+      {/* Three equal flex spacers (above the primary row, between the rows,
+          and below the secondary row) evenly distribute the controls in the
+          space under the progress bar — this centers the primary row between
+          the progress bar and the secondary row. */}
+      <View style={styles.playerSpacer} />
+
       {/* Playback controls */}
       <View style={styles.controls}>
-        {/* Playback rate toggle */}
+        {/* Shuffle toggle */}
         <View style={styles.controlSideLeft}>
-          <PlaybackRateButton />
+          <ShuffleButton
+            onPress={handleShuffle}
+            disabled={shuffling || queueLength < 2}
+            size={28}
+          />
         </View>
 
         {/* Transport controls */}
@@ -712,10 +570,6 @@ const PlayerContent = memo(function PlayerContent({
               color={canSkipPrevious ? colors.textPrimary : colors.textSecondary}
             />
           </Pressable>
-
-          {showSkipInterval && (
-            <SkipIntervalButton direction="backward" size={32} />
-          )}
 
           <Pressable
             onPress={togglePlayPause}
@@ -737,10 +591,6 @@ const PlayerContent = memo(function PlayerContent({
             )}
           </Pressable>
 
-          {showSkipInterval && (
-            <SkipIntervalButton direction="forward" size={32} />
-          )}
-
           <Pressable
             onPress={skipToNext}
             hitSlop={12}
@@ -761,14 +611,28 @@ const PlayerContent = memo(function PlayerContent({
         </View>
       </View>
 
-      {/* Secondary controls row — mirrors primary controls layout */}
+      {/* Middle spacer — equal to the spacers above and below the rows. */}
+      <View style={styles.playerSpacer} />
+
+      {/* Secondary controls row — mirrors primary controls layout. Skip-interval
+          buttons sit under prev/next with the playback rate between them. */}
       <View style={styles.secondaryControls}>
-        <View style={styles.controlSideLeft}>
+        <View style={[styles.controlSideLeft, styles.secondaryLeftInset]}>
           {showSleepTimer && <SleepTimerButton />}
         </View>
-        <View style={styles.secondaryCenter} />
+        <View style={[styles.secondaryCenter, styles.secondaryCenterRow]}>
+          {showSkipInterval && (
+            <SkipIntervalButton direction="backward" size={32} />
+          )}
+          <View style={styles.secondaryRateSlot}>
+            <PlaybackRateButton />
+          </View>
+          {showSkipInterval && (
+            <SkipIntervalButton direction="forward" size={32} />
+          )}
+        </View>
         <View style={styles.controlSideRight}>
-          <BookmarkButton colors={colors} />
+          <BookmarkButton style={styles.favoriteButton} />
         </View>
       </View>
 
@@ -1025,6 +889,9 @@ const styles = StyleSheet.create({
     paddingLeft: 12,
     paddingVertical: 4,
   },
+  secondaryLeftInset: {
+    paddingLeft: 4,
+  },
   progressSection: {
     paddingHorizontal: HERO_PADDING,
     maxWidth: 464,
@@ -1055,10 +922,21 @@ const styles = StyleSheet.create({
   secondaryCenter: {
     width: 248,
   },
+  secondaryCenterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-evenly',
+  },
+  secondaryRateSlot: {
+    width: 64,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   secondaryControls: {
     flexDirection: 'row',
     alignItems: 'center',
     height: 40,
+    marginTop: 20,
     paddingHorizontal: HERO_PADDING,
     maxWidth: 464,
     width: '100%',
@@ -1125,23 +1003,5 @@ const styles = StyleSheet.create({
   },
   lyricsContainer: {
     flex: 1,
-  },
-  shuffleOverlay: {
-    ...absoluteFill,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 20,
-  },
-  shuffleCard: {
-    borderRadius: 16,
-    paddingHorizontal: 32,
-    paddingVertical: 24,
-    alignItems: 'center',
-    gap: 12,
-  },
-  shuffleText: {
-    fontSize: 16,
-    fontWeight: '600',
   },
 });

@@ -7,8 +7,21 @@
 
 import { StyleSheet, Text } from 'react-native';
 
-export function SectionTitle({ title, color }: { title: string; color: string }) {
-  return <Text style={[styles.sectionTitle, { color }]}>{title}</Text>;
+export function SectionTitle({
+  title,
+  color,
+  large = false,
+}: {
+  title: string;
+  color: string;
+  /** Larger, title-case heading for prominent feature pages (e.g. Tuned In). */
+  large?: boolean;
+}) {
+  return (
+    <Text style={[large ? styles.sectionTitleLarge : styles.sectionTitle, { color }]}>
+      {title}
+    </Text>
+  );
 }
 
 const styles = StyleSheet.create({
@@ -18,6 +31,13 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     marginBottom: 10,
+    marginLeft: 4,
+  },
+  sectionTitleLarge: {
+    fontSize: 22,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+    marginBottom: 18,
     marginLeft: 4,
   },
 });

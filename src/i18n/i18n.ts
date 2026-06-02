@@ -45,7 +45,25 @@ import '@formatjs/intl-datetimeformat/locale-data/zh.js';
 
 import i18next from 'i18next';
 import { initReactI18next } from 'react-i18next';
-import { getLocales } from 'expo-localization';
+import { getCalendars, getLocales } from 'expo-localization';
+
+// `@formatjs/intl-datetimeformat` (force-polyfilled above) defaults its
+// timezone to UTC — without this, EVERY Intl-formatted time renders in UTC.
+// The hour bucketing uses native `Date.getHours()` (already local), but the
+// chart labels / "peak hour" text go through Intl, so they appeared shifted by
+// the device's UTC offset (e.g. a 1 PM peak labelled "1 AM" for +12 users).
+// Point the polyfill at the device timezone; `add-all-tz` is already loaded.
+try {
+  const deviceTimeZone = getCalendars()[0]?.timeZone;
+  const DTF = Intl.DateTimeFormat as unknown as {
+    __setDefaultTimeZone?: (tz: string) => void;
+  };
+  if (deviceTimeZone && typeof DTF.__setDefaultTimeZone === 'function') {
+    DTF.__setDefaultTimeZone(deviceTimeZone);
+  }
+} catch {
+  // Native timezone unavailable (e.g. tests) — fall back to the UTC default.
+}
 
 // Locale JSON imports — add new imports here when enabling a language
 import en from './locales/en.json';

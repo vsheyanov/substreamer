@@ -11,6 +11,7 @@ import {
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import Animated, {
@@ -29,15 +30,14 @@ import { GradientBackground } from '../components/GradientBackground';
 import { BottomChrome } from '../components/BottomChrome';
 import { SectionTitle } from '../components/SectionTitle';
 import {
-  DECADES,
-  fetchCustomMix,
+  SELECTABLE_DECADES,
   fetchMixSongs,
   generateMixes,
   type MixDefinition,
 } from '../services/tunedInService';
 import { getOfflineSongsByGenre } from '../services/searchService';
 import { playTrack } from '../services/playerService';
-import { getAlbum, type Child } from '../services/subsonicService';
+import { getAlbum } from '../services/subsonicService';
 import { albumListsStore } from '../store/albumListsStore';
 import { completedScrobbleStore } from '../store/completedScrobbleStore';
 import { connectivityStore } from '../store/connectivityStore';
@@ -45,6 +45,8 @@ import { favoritesStore } from '../store/favoritesStore';
 import { genreStore } from '../store/genreStore';
 import { layoutPreferencesStore } from '../store/layoutPreferencesStore';
 import { offlineModeStore } from '../store/offlineModeStore';
+import { getGridColumns } from '../hooks/useGridColumns';
+import { MAX_SELECTED_GENRES, useMixBuilder, type MixBuilder } from '../hooks/useMixBuilder';
 import { useRefreshControlKey } from '../hooks/useRefreshControlKey';
 import { useTheme } from '../hooks/useTheme';
 import { useTransitionComplete } from '../hooks/useTransitionComplete';
@@ -54,21 +56,25 @@ import { selectionAsync } from '../utils/haptics';
 import { minDelay } from '../utils/stringHelpers';
 
 import { absoluteFill } from '../utils/styles';
-const MAX_SELECTED_GENRES = 3;
 const MAX_BUILDER_GENRES = 30;
 const JUMP_BACK_IN_SIZE = 150;
 const JUMP_BACK_IN_IMAGE = 80;
+/** Tablet Jump Back In artwork — matches the home screen's album cover width. */
+const JUMP_BACK_IN_TABLET_IMAGE = 150;
+
+/* Tablet "For You" bento grid. Phone keeps the hero / medium-row / compact-list
+   stack; tablets (min dimension >= 600) re-flow mixes into a responsive grid so
+   cards stop stretching into thin full-width bars. */
+const SCREEN_H_PADDING = 16;
+const BENTO_GAP = 12;
+const BENTO_TILE_H = 150;
+const TABLET_MIN_DIMENSION = 600;
+/** Embedded builder goes two-column above this content width; single below. */
+const BUILDER_TWO_COL_MIN_WIDTH = 700;
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
-
-function isOnline(): boolean {
-  const { offlineMode } = offlineModeStore.getState();
-  if (offlineMode) return false;
-  const { isServerReachable } = connectivityStore.getState();
-  return isServerReachable;
-}
 
 function genreColor(genre: string): string {
   let hash = 0;
@@ -166,27 +172,30 @@ function useMixCardPlayback(mix: MixDefinition, index: number) {
 const HeroMixCard = memo(function HeroMixCard({
   mix,
   index,
+  fillHeight = false,
 }: {
   mix: MixDefinition;
   index: number;
+  /** Fill a fixed-height grid cell (tablet bento) instead of using minHeight. */
+  fillHeight?: boolean;
 }) {
   const { loading, error, handlePress, handlePressIn, handlePressOut, animatedStyle, gradientAnimatedStyle } =
     useMixCardPlayback(mix, index);
 
   return (
-    <Animated.View style={animatedStyle}>
+    <Animated.View style={[animatedStyle, fillHeight && styles.fillFlex]}>
       <Pressable
         onPress={handlePress}
         onPressIn={handlePressIn}
         onPressOut={handlePressOut}
-        style={styles.heroOuter}
+        style={[styles.heroOuter, fillHeight && styles.fillFlex]}
       >
-        <Animated.View style={[styles.heroGradientWrapper, gradientAnimatedStyle]}>
+        <Animated.View style={[styles.heroGradientWrapper, fillHeight && styles.fillFlex, gradientAnimatedStyle]}>
           <LinearGradient
             colors={mix.gradientColors}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 1 }}
-            style={styles.heroGradient}
+            style={[styles.heroGradient, fillHeight && styles.fillFlex]}
           >
             {/* Decorative circles */}
             <View style={styles.heroDecoCircle1} />
@@ -222,9 +231,12 @@ const HeroMixCard = memo(function HeroMixCard({
 const MediumMixCard = memo(function MediumMixCard({
   mix,
   index,
+  fillHeight = false,
 }: {
   mix: MixDefinition;
   index: number;
+  /** Fill a fixed-height grid cell (tablet bento) instead of using minHeight. */
+  fillHeight?: boolean;
 }) {
   const { loading, error, handlePress, handlePressIn, handlePressOut, animatedStyle, gradientAnimatedStyle } =
     useMixCardPlayback(mix, index);
@@ -242,7 +254,7 @@ const MediumMixCard = memo(function MediumMixCard({
             colors={mix.gradientColors}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 1 }}
-            style={styles.mediumGradient}
+            style={[styles.mediumGradient, fillHeight && styles.fillFlex]}
           >
             {/* Small play button top-right */}
             <View style={styles.mediumPlayCorner}>
@@ -379,12 +391,18 @@ const BuildMixButton = memo(function BuildMixButton({
 const JumpBackInItem = memo(function JumpBackInItem({
   album,
   colors,
+  size = JUMP_BACK_IN_IMAGE,
 }: {
   album: { id: string; name?: string; coverArt?: string };
   colors: ThemeColors;
+  /** Artwork edge length. Phone uses the compact default; the tablet grid
+      passes a larger value for a more visual layout. */
+  size?: number;
 }) {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(false);
+  // Fetch a sharper variant for the larger tablet tiles.
+  const coverFetchSize = size > 120 ? 300 : JUMP_BACK_IN_SIZE;
 
   const handlePress = useCallback(async () => {
     if (loading) return;
@@ -402,20 +420,20 @@ const JumpBackInItem = memo(function JumpBackInItem({
   }, [album.id, loading]);
 
   return (
-    <Pressable onPress={handlePress} style={styles.jumpItem}>
+    <Pressable onPress={handlePress} style={[styles.jumpItem, { width: size }]}>
       <CachedImage
         coverArtId={album.id}
-        size={JUMP_BACK_IN_SIZE}
-        style={styles.jumpImage}
+        size={coverFetchSize}
+        style={[styles.jumpImage, { width: size, height: size }]}
         resizeMode="cover"
       />
       {loading && (
-        <View style={styles.jumpLoadingOverlay}>
+        <View style={[styles.jumpLoadingOverlay, { width: size, height: size }]}>
           <ActivityIndicator size="small" color="#fff" />
         </View>
       )}
       <Text
-        style={[styles.jumpTitle, { color: colors.textPrimary }]}
+        style={[styles.jumpTitle, { color: colors.textPrimary }, size > 120 && styles.jumpTitleLarge]}
         numberOfLines={1}
       >
         {album.name ?? t('unknownAlbum')}
@@ -553,10 +571,151 @@ const GenreSearchResult = memo(function GenreSearchResult({
 });
 
 /* ------------------------------------------------------------------ */
-/*  BuildMixSheetContent                                               */
+/*  Build-a-Mix presentation (shared logic in useMixBuilder)           */
 /* ------------------------------------------------------------------ */
 
-const BuildMixSheetContent = memo(function BuildMixSheetContent({
+/** Genre search input — identical in the sheet and the panel. */
+const GenreSearchField = memo(function GenreSearchField({
+  colors,
+  value,
+  onChange,
+}: {
+  colors: ThemeColors;
+  value: string;
+  onChange: (q: string) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <View style={[styles.searchInputContainer, { backgroundColor: colors.inputBg, borderColor: colors.border }]}>
+      <Ionicons name="search" size={16} color={colors.textSecondary} />
+      <TextInput
+        style={[styles.searchInput, { color: colors.textPrimary }]}
+        placeholder={t('searchGenresPlaceholder')}
+        placeholderTextColor={colors.textSecondary}
+        value={value}
+        onChangeText={onChange}
+        autoCapitalize="none"
+        autoCorrect={false}
+        returnKeyType="done"
+      />
+      {value.length > 0 && (
+        <Pressable onPress={() => onChange('')} hitSlop={8}>
+          <Ionicons name="close-circle" size={16} color={colors.textSecondary} />
+        </Pressable>
+      )}
+    </View>
+  );
+});
+
+/** Genre search-results dropdown (renders nothing when empty). */
+const GenreSearchResults = memo(function GenreSearchResults({
+  colors,
+  results,
+  onSelect,
+}: {
+  colors: ThemeColors;
+  results: string[];
+  onSelect: (genre: string) => void;
+}) {
+  if (results.length === 0) return null;
+  return (
+    <View style={[styles.searchResultsList, { backgroundColor: colors.inputBg, borderColor: colors.border }]}>
+      {results.map((genre) => (
+        <GenreSearchResult key={genre} genre={genre} onSelect={onSelect} colors={colors} />
+      ))}
+    </View>
+  );
+});
+
+/** Primary "Play Mix" action button. */
+const PlayMixButton = memo(function PlayMixButton({
+  colors,
+  loading,
+  onPress,
+}: {
+  colors: ThemeColors;
+  loading: boolean;
+  onPress: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={loading}
+      style={[styles.playMixButton, { backgroundColor: colors.primary }]}
+    >
+      {loading ? (
+        <ActivityIndicator size="small" color="#fff" />
+      ) : (
+        <>
+          <Ionicons name="play" size={18} color="#fff" />
+          <Text style={styles.playMixButtonText}>{t('playMix')}</Text>
+        </>
+      )}
+    </Pressable>
+  );
+});
+
+/* Shared chip / pill renderers so the sheet and panel build identical controls
+   from the shared builder state. */
+function renderGenreChips(builder: MixBuilder, colors: ThemeColors) {
+  return builder.displayGenres.map((genre) => (
+    <BuilderGenreChip
+      key={genre}
+      genre={genre}
+      selected={builder.selectedGenres.includes(genre)}
+      onToggle={builder.toggleGenre}
+      colors={colors}
+    />
+  ));
+}
+
+function renderDecadePills(
+  builder: MixBuilder,
+  colors: ThemeColors,
+  t: (key: string) => string,
+) {
+  return SELECTABLE_DECADES.map((decade) => (
+    <DecadePill
+      key={decade.label}
+      label={decade.i18nKey ? t(decade.i18nKey) : decade.label}
+      selected={builder.selectedDecades.includes(decade.label)}
+      onPress={() => builder.toggleDecade(decade.label)}
+      colors={colors}
+    />
+  ));
+}
+
+/** "Genres" heading + selected-count, sized small (sheet) or large (panel). */
+const GenresHeading = memo(function GenresHeading({
+  builder,
+  colors,
+  large = false,
+}: {
+  builder: MixBuilder;
+  colors: ThemeColors;
+  large?: boolean;
+}) {
+  const { t } = useTranslation();
+  return (
+    <Text
+      style={[
+        large ? styles.builderLabelLarge : styles.builderLabel,
+        { color: large ? colors.textPrimary : colors.textSecondary },
+      ]}
+    >
+      {builder.selectedGenres.length > 0
+        ? t('genresWithCount', { selected: builder.selectedGenres.length, max: MAX_SELECTED_GENRES })
+        : t('genres')}
+    </Text>
+  );
+});
+
+/* ------------------------------------------------------------------ */
+/*  MixBuilderSheet — phone (bottom sheet) presentation                */
+/* ------------------------------------------------------------------ */
+
+const MixBuilderSheet = memo(function MixBuilderSheet({
   colors,
   availableGenres,
 }: {
@@ -564,138 +723,22 @@ const BuildMixSheetContent = memo(function BuildMixSheetContent({
   availableGenres: string[];
 }) {
   const { t } = useTranslation();
-  const [selectedGenres, setSelectedGenres] = useState<string[]>([]);
-  const [selectedDecadeIndex, setSelectedDecadeIndex] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [addedGenres, setAddedGenres] = useState<string[]>([]);
+  const builder = useMixBuilder(availableGenres);
   const chipScrollRef = useRef<ScrollView>(null);
-  const online = isOnline();
 
-  const serverGenres = genreStore((s) => s.genres);
-
-  // Merge added genres (from search) to the front of the chip list
-  const displayGenres = useMemo(() => {
-    const availableSet = new Set(availableGenres.map((g) => g.toLowerCase()));
-    const extraGenres = addedGenres.filter((g) => !availableSet.has(g.toLowerCase()));
-    return [...extraGenres, ...availableGenres];
-  }, [availableGenres, addedGenres]);
-
-  // Filter full server genre list for search
-  const searchResults = useMemo(() => {
-    const query = searchQuery.trim().toLowerCase();
-    if (query.length === 0) return [];
-
-    const displaySet = new Set(displayGenres.map((g) => g.toLowerCase()));
-
-    return serverGenres
-      .filter((g) => {
-        const name = g.value.toLowerCase();
-        return name.includes(query) && !displaySet.has(name);
-      })
-      .slice(0, 8)
-      .map((g) => g.value);
-  }, [searchQuery, serverGenres, displayGenres]);
-
-  const handleToggleGenre = useCallback((genre: string) => {
-    setSelectedGenres((prev) => {
-      if (prev.includes(genre)) return prev.filter((g) => g !== genre);
-      if (prev.length >= MAX_SELECTED_GENRES) return prev;
-      return [...prev, genre];
-    });
-  }, []);
-
-  const handleSelectSearchResult = useCallback((genre: string) => {
-    selectionAsync();
-    setAddedGenres((prev) => [genre, ...prev.filter((g) => g !== genre)]);
-    setSelectedGenres((prev) => {
-      if (prev.includes(genre)) return prev;
-      if (prev.length >= MAX_SELECTED_GENRES) return prev;
-      return [genre, ...prev];
-    });
-    setSearchQuery('');
-    chipScrollRef.current?.scrollTo({ x: 0, animated: true });
-  }, []);
-
-  const handleDecadePress = useCallback((index: number) => {
-    selectionAsync();
-    setSelectedDecadeIndex(index);
-  }, []);
-
-  const handlePlay = useCallback(async () => {
-    if (loading) return;
-    selectionAsync();
-    setLoading(true);
-    try {
-      let songs: Child[];
-      const ll = layoutPreferencesStore.getState().listLength;
-      const decade = DECADES[selectedDecadeIndex];
-      const hasDecade = decade.fromYear !== undefined && decade.toYear !== undefined;
-      if (selectedGenres.length === 0 && !hasDecade) {
-        // No selection at all — fully random "Mix It Up"
-        const strategy = online
-          ? { type: 'random' as const, size: ll }
-          : { type: 'offline' as const };
-        songs = await fetchMixSongs(strategy, ll);
-      } else {
-        // Era-only, genre-only, or both — fetchCustomMix handles all three.
-        songs = await fetchCustomMix(
-          selectedGenres,
-          decade.fromYear,
-          decade.toYear,
-          online,
-          ll,
-        );
-      }
-      if (songs.length > 0) {
-        await playTrack(songs[0], songs);
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, [selectedGenres, selectedDecadeIndex, loading, online]);
+  const onSelectResult = useCallback(
+    (genre: string) => {
+      builder.selectSearchResult(genre);
+      chipScrollRef.current?.scrollTo({ x: 0, animated: true });
+    },
+    [builder],
+  );
 
   return (
     <ScrollView style={styles.sheetScroll} showsVerticalScrollIndicator={false}>
-      {/* Genre chips */}
-      <Text style={[styles.builderLabel, { color: colors.textSecondary }]}>
-        {selectedGenres.length > 0 ? t('genresWithCount', { selected: selectedGenres.length, max: MAX_SELECTED_GENRES }) : t('genres')}
-      </Text>
-
-      {/* Genre search input */}
-      <View style={[styles.searchInputContainer, { backgroundColor: colors.inputBg, borderColor: colors.border }]}>
-        <Ionicons name="search" size={16} color={colors.textSecondary} />
-        <TextInput
-          style={[styles.searchInput, { color: colors.textPrimary }]}
-          placeholder={t('searchGenresPlaceholder')}
-          placeholderTextColor={colors.textSecondary}
-          value={searchQuery}
-          onChangeText={setSearchQuery}
-          autoCapitalize="none"
-          autoCorrect={false}
-          returnKeyType="done"
-        />
-        {searchQuery.length > 0 && (
-          <Pressable onPress={() => setSearchQuery('')} hitSlop={8}>
-            <Ionicons name="close-circle" size={16} color={colors.textSecondary} />
-          </Pressable>
-        )}
-      </View>
-
-      {/* Search results dropdown */}
-      {searchResults.length > 0 && (
-        <View style={[styles.searchResultsList, { backgroundColor: colors.inputBg, borderColor: colors.border }]}>
-          {searchResults.map((genre) => (
-            <GenreSearchResult
-              key={genre}
-              genre={genre}
-              onSelect={handleSelectSearchResult}
-              colors={colors}
-            />
-          ))}
-        </View>
-      )}
-
+      <GenresHeading builder={builder} colors={colors} />
+      <GenreSearchField colors={colors} value={builder.searchQuery} onChange={builder.setSearchQuery} />
+      <GenreSearchResults colors={colors} results={builder.searchResults} onSelect={onSelectResult} />
       <ScrollView
         ref={chipScrollRef}
         horizontal
@@ -703,58 +746,79 @@ const BuildMixSheetContent = memo(function BuildMixSheetContent({
         contentContainerStyle={styles.builderChipRow}
         style={styles.chipScrollView}
       >
-        {displayGenres.map((genre) => (
-          <BuilderGenreChip
-            key={genre}
-            genre={genre}
-            selected={selectedGenres.includes(genre)}
-            onToggle={handleToggleGenre}
-            colors={colors}
-          />
-        ))}
+        {renderGenreChips(builder, colors)}
       </ScrollView>
 
-      {/* Decade selector */}
       <Text style={[styles.builderLabel, { color: colors.textSecondary, marginTop: 16 }]}>
         {t('decade')}
       </Text>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.decadeRow}
-      >
-        {DECADES.map((decade, i) => (
-          <DecadePill
-            key={decade.label}
-            label={decade.label === 'Any' ? t('decadeAny') : decade.label}
-            selected={selectedDecadeIndex === i}
-            onPress={() => handleDecadePress(i)}
-            colors={colors}
-          />
-        ))}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.decadeRow}>
+        {renderDecadePills(builder, colors, t)}
       </ScrollView>
 
-      {/* Play button */}
-      <Pressable
-        onPress={handlePlay}
-        disabled={loading}
-        style={[
-          styles.playMixButton,
-          { backgroundColor: colors.primary },
-        ]}
-      >
-        {loading ? (
-          <ActivityIndicator size="small" color="#fff" />
-        ) : (
-          <>
-            <Ionicons name="play" size={18} color="#fff" />
-            <Text style={styles.playMixButtonText}>{t('playMix')}</Text>
-          </>
-        )}
-      </Pressable>
-
+      <PlayMixButton colors={colors} loading={builder.loading} onPress={builder.play} />
       <View style={styles.sheetBottomPad} />
     </ScrollView>
+  );
+});
+
+/* ------------------------------------------------------------------ */
+/*  MixBuilderPanel — embedded tablet presentation                     */
+/* ------------------------------------------------------------------ */
+
+const MixBuilderPanel = memo(function MixBuilderPanel({
+  colors,
+  availableGenres,
+}: {
+  colors: ThemeColors;
+  availableGenres: string[];
+}) {
+  const { t } = useTranslation();
+  const builder = useMixBuilder(availableGenres);
+  const { width } = useWindowDimensions();
+  // Genres | Decades side-by-side once there's room; stacked below that.
+  const twoColumn = width - SCREEN_H_PADDING * 2 >= BUILDER_TWO_COL_MIN_WIDTH;
+
+  const genresSection = (
+    <>
+      <GenresHeading builder={builder} colors={colors} large />
+      <GenreSearchField colors={colors} value={builder.searchQuery} onChange={builder.setSearchQuery} />
+      <GenreSearchResults colors={colors} results={builder.searchResults} onSelect={builder.selectSearchResult} />
+      <View style={styles.builderChipCloud}>{renderGenreChips(builder, colors)}</View>
+    </>
+  );
+
+  const decadesSection = (
+    <>
+      <Text
+        style={[
+          styles.builderLabelLarge,
+          { color: colors.textPrimary },
+          // Separate from the genre cloud when stacked; aligned at top in columns.
+          !twoColumn && styles.builderLabelStacked,
+        ]}
+      >
+        {t('decade')}
+      </Text>
+      <View style={styles.decadeCloud}>{renderDecadePills(builder, colors, t)}</View>
+    </>
+  );
+
+  return (
+    <View>
+      {twoColumn ? (
+        <View style={styles.builderColumns}>
+          <View style={styles.builderColGenres}>{genresSection}</View>
+          <View style={styles.builderColDecades}>{decadesSection}</View>
+        </View>
+      ) : (
+        <>
+          {genresSection}
+          {decadesSection}
+        </>
+      )}
+      <PlayMixButton colors={colors} loading={builder.loading} onPress={builder.play} />
+    </View>
   );
 });
 
@@ -768,6 +832,15 @@ export function TunedInScreen() {
   const transitionComplete = useTransitionComplete();
   const headerHeight = useContext(HeaderHeightContext) ?? 0;
   const refreshControlKey = useRefreshControlKey();
+  const { width, height: screenHeight } = useWindowDimensions();
+
+  // Tablet "For You" bento: responsive columns with the lead mix spanning 2.
+  const isTablet = Math.min(width, screenHeight) >= TABLET_MIN_DIMENSION;
+  const bentoColumns = getGridColumns(width);
+  const bentoCellW = Math.floor(
+    (width - SCREEN_H_PADDING * 2 - (bentoColumns - 1) * BENTO_GAP) / bentoColumns,
+  );
+  const bentoHeroW = bentoCellW * 2 + BENTO_GAP;
 
   const aggregates = completedScrobbleStore((s) => s.aggregates);
   const completedScrobbles = completedScrobbleStore((s) => s.completedScrobbles);
@@ -893,49 +966,86 @@ export function TunedInScreen() {
         {/* For You section */}
         {mixes.length > 0 && (
           <View style={styles.section}>
-            <SectionTitle title={t('forYou')} color={colors.textSecondary} />
-            <View style={styles.mixList}>
-              {/* Hero card */}
-              {heroMix && <HeroMixCard mix={heroMix} index={0} />}
+            <SectionTitle title={t('forYou')} color={colors.textPrimary} large />
+            {isTablet ? (
+              /* Tablet: responsive bento — lead mix spans 2 cells, the rest are
+                 equal gradient tiles, so cards fill the width instead of
+                 stretching into thin full-width bars. */
+              <View style={styles.bentoGrid}>
+                {mixes.map((mix, i) => (
+                  <View
+                    key={mix.id}
+                    style={{ width: i === 0 ? bentoHeroW : bentoCellW, height: BENTO_TILE_H }}
+                  >
+                    {i === 0 ? (
+                      <HeroMixCard mix={mix} index={i} fillHeight />
+                    ) : (
+                      <MediumMixCard mix={mix} index={i} fillHeight />
+                    )}
+                  </View>
+                ))}
+              </View>
+            ) : (
+              /* Phone: unchanged hero / medium-row / compact-list stack. */
+              <View style={styles.mixList}>
+                {heroMix && <HeroMixCard mix={heroMix} index={0} />}
 
-              {/* Medium cards side by side */}
-              {mediumMixes.length > 0 && (
-                <View style={styles.mediumRow}>
-                  {mediumMixes.map((mix, i) => (
-                    <MediumMixCard key={mix.id} mix={mix} index={i + 1} />
-                  ))}
-                </View>
-              )}
+                {mediumMixes.length > 0 && (
+                  <View style={styles.mediumRow}>
+                    {mediumMixes.map((mix, i) => (
+                      <MediumMixCard key={mix.id} mix={mix} index={i + 1} />
+                    ))}
+                  </View>
+                )}
 
-              {/* Compact cards */}
-              {compactMixes.map((mix, i) => (
-                <CompactMixCard key={mix.id} mix={mix} index={i + 3} />
-              ))}
-            </View>
+                {compactMixes.map((mix, i) => (
+                  <CompactMixCard key={mix.id} mix={mix} index={i + 3} />
+                ))}
+              </View>
+            )}
           </View>
         )}
 
-        {/* Create section */}
+        {/* Create section — embedded builder on tablet, sheet trigger on phone */}
         {hasBuilder && (
           <View style={styles.section}>
-            <SectionTitle title={t('create')} color={colors.textSecondary} />
-            <BuildMixButton colors={colors} onPress={handleOpenSheet} />
+            <SectionTitle title={t('create')} color={colors.textPrimary} large />
+            {isTablet ? (
+              <MixBuilderPanel colors={colors} availableGenres={builderGenres} />
+            ) : (
+              <BuildMixButton colors={colors} onPress={handleOpenSheet} />
+            )}
           </View>
         )}
 
         {/* Jump back in section */}
         {showJumpBackIn && (
           <View style={styles.section}>
-            <SectionTitle title={t('jumpBackIn')} color={colors.textSecondary} />
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.jumpRow}
-            >
-              {recentlyPlayed.map((album) => (
-                <JumpBackInItem key={album.id} album={album} colors={colors} />
-              ))}
-            </ScrollView>
+            <SectionTitle title={t('jumpBackIn')} color={colors.textPrimary} large />
+            {isTablet ? (
+              /* Tablet: a grid of larger artwork at the home-screen cover size. */
+              <View style={styles.jumpGrid}>
+                {recentlyPlayed.map((album) => (
+                  <JumpBackInItem
+                    key={album.id}
+                    album={album}
+                    colors={colors}
+                    size={JUMP_BACK_IN_TABLET_IMAGE}
+                  />
+                ))}
+              </View>
+            ) : (
+              /* Phone: compact horizontal scroller. */
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.jumpRow}
+              >
+                {recentlyPlayed.map((album) => (
+                  <JumpBackInItem key={album.id} album={album} colors={colors} />
+                ))}
+              </ScrollView>
+            )}
           </View>
         )}
 
@@ -945,7 +1055,7 @@ export function TunedInScreen() {
       {/* Build a Mix bottom sheet */}
       <BottomSheet visible={sheetOpen} onClose={handleCloseSheet} maxHeight="75%">
         <Text style={[styles.sheetTitle, { color: colors.textPrimary }]}>{t('buildAMix')}</Text>
-        <BuildMixSheetContent colors={colors} availableGenres={builderGenres} />
+        <MixBuilderSheet colors={colors} availableGenres={builderGenres} />
       </BottomSheet>
       <BottomChrome withSafeAreaPadding />
     </GradientBackground>
@@ -969,10 +1079,51 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   section: {
-    marginBottom: 24,
+    marginBottom: 36,
   },
   mixList: {
     gap: 12,
+  },
+  /* Tablet bento grid — equal-gap wrap; lead tile spans 2 cells (see render). */
+  bentoGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: BENTO_GAP,
+    alignItems: 'flex-start',
+  },
+  /** Fills a fixed-height bento cell instead of relying on the card's minHeight. */
+  fillFlex: {
+    flex: 1,
+  },
+  /* Embedded (tablet) builder layout */
+  builderColumns: {
+    flexDirection: 'row',
+    gap: 28,
+  },
+  builderColGenres: {
+    flex: 3,
+  },
+  builderColDecades: {
+    flex: 2,
+  },
+  builderLabelLarge: {
+    fontSize: 17,
+    fontWeight: '700',
+    marginBottom: 12,
+  },
+  builderLabelStacked: {
+    marginTop: 20,
+  },
+  builderChipCloud: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 2,
+  },
+  decadeCloud: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
   },
 
   /* Hero card */
@@ -1216,6 +1367,16 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     textAlign: 'center',
     marginTop: 6,
+  },
+  jumpTitleLarge: {
+    fontSize: 14,
+    marginTop: 8,
+  },
+  /* Tablet: larger artwork laid out as a grid, aligned to the For You columns. */
+  jumpGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: BENTO_GAP,
   },
 
   /* Sheet */
