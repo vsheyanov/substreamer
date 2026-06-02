@@ -1,5 +1,32 @@
 # Changelog
 
+## [8.0.69] - 2026-06-02
+
+- fix: deprecation
+- ci: update coverage badge [skip ci]
+- Merge pull request #165 from ghenry22/perf/songs-library-prewarm
+- perf(library): keep songs cache warm + fetch off the JS thread
+- ci: update coverage badge [skip ci]
+- Merge pull request #164 from ghenry22/feat/tablet-portrait-player
+- feat(player): tablet-portrait mini player
+- feat(downloads): add Download Full Library (#88)
+- feat(tuned-in): tablet layouts + multi-decade builder; fix Intl timezone
+- chore(deps): bump Expo SDK 56 patch releases
+- feat(player+cache): player reorg, tablet-portrait rework, canonical cover-art IDs
+- fix(player): align secondary control row under the primary row
+- feat(player): add bookmark button to expanded player secondary row
+- feat(player): rework tablet-portrait top section to a horizontal band
+- refactor(player): use shared Favorite/Bookmark buttons in all 4 players
+- refactor(player): extract shared FavoriteButton + BookmarkButton
+- test(player): expect 2 shuffle buttons in queue tab (controls + header)
+- feat(player): route /player to TabletPortraitPlayer on tablet portrait
+- feat(player): add TabletPortraitPlayer screen
+- feat(player): add UpNextPanel inline draggable queue/info/lyrics panel
+- refactor(player): migrate PlayerPanel onto shared shuffle/queue hooks
+- refactor(player): migrate ExpandedPlayerView onto shared shuffle/queue hooks
+- refactor(player): migrate PlayerView onto shared shuffle/queue hooks
+- refactor(player): extract shuffle overlay + queue actions into shared hooks
+- ci: update coverage badge [skip ci]
 ## [8.0.68] - 2026-05-31
 
 - ci: update coverage badge [skip ci]
