@@ -107,6 +107,49 @@ export function hydrateImageCacheAggregates(): ImageCacheAggregates {
   }
 }
 
+/**
+ * Async twin of {@link hydrateImageCacheAggregates}. Uses `getFirstAsync` so the
+ * two scans of `cached_images` run on a background native thread instead of
+ * blocking the JS thread. Use this on interactive/hot paths (e.g. the recalc
+ * after every image download); the sync version is reserved for one-shot boot
+ * hydration where ordering matters.
+ */
+export async function hydrateImageCacheAggregatesAsync(): Promise<ImageCacheAggregates> {
+  const db = getDb();
+  if (db === null) return { ...EMPTY_AGGREGATES };
+  try {
+    const totals = await db.getFirstAsync<{
+      total_bytes: number | null;
+      file_count: number;
+      image_count: number;
+    }>(
+      `SELECT
+         COALESCE(SUM(bytes), 0) AS total_bytes,
+         COUNT(*) AS file_count,
+         COUNT(DISTINCT cover_art_id) AS image_count
+       FROM cached_images;`,
+    );
+    // See the sync version for why in-queue cover_art_ids are excluded.
+    const incomplete = await db.getFirstAsync<{ c: number }>(
+      `SELECT COUNT(*) AS c FROM (
+         SELECT cover_art_id FROM cached_images
+           WHERE cover_art_id NOT IN (
+             SELECT cover_art_id FROM image_download_queue
+           )
+           GROUP BY cover_art_id HAVING COUNT(*) < 4
+       );`,
+    );
+    return {
+      totalBytes: totals?.total_bytes ?? 0,
+      fileCount: totals?.file_count ?? 0,
+      imageCount: totals?.image_count ?? 0,
+      incompleteCount: incomplete?.c ?? 0,
+    };
+  } catch {
+    return { ...EMPTY_AGGREGATES };
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /*  Single-variant writes                                              */
 /* ------------------------------------------------------------------ */

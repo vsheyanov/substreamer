@@ -4,7 +4,6 @@ import { ScrollView } from 'react-native';
 
 import { BottomChrome } from '../components/BottomChrome';
 import { GradientBackground } from '../components/GradientBackground';
-import { AlbumCacheRefreshCard } from '../components/settings/AlbumCacheRefreshCard';
 import { BackupRestoreCard } from '../components/settings/BackupRestoreCard';
 import { LibrarySyncCard } from '../components/settings/LibrarySyncCard';
 import { ListeningHistoryCard } from '../components/settings/ListeningHistoryCard';
@@ -23,7 +22,6 @@ export function SettingsLibraryDataScreen() {
         showsVerticalScrollIndicator={false}
       >
         <LibrarySyncCard />
-        <AlbumCacheRefreshCard />
         <ListeningHistoryCard />
         <MetadataCorrectionsCard />
         <BackupRestoreCard />

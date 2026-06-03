@@ -76,44 +76,6 @@ export type RemoteControlMode = 'skip-track' | 'skip-interval';
 /** Whether artist play/shuffle buttons use top songs or all songs across all albums. */
 export type ArtistPlayMode = 'topSongs' | 'allSongs';
 
-/**
- * How aggressively to re-fetch album metadata from the server before
- * playback. Trades a small tap-to-audio latency cost for catching
- * server-side ID changes (Navidrome rescans, file replacements,
- * octo-fiesta permanentize) BEFORE they cause a 'Source error' flash.
- *
- * Defaults to '1week' — the base assumption is that libraries are
- * mostly static, so even a week between proactive refreshes is plenty
- * for the typical user. The reactive recovery path handles anything
- * that slips through.
- *
- *   - 'always' : refresh on every play (heaviest server load)
- *   - '1hour'  : refresh if cache is older than 1 hour
- *   - '1day'   : refresh if cache is older than 1 day
- *   - '1week'  : refresh if cache is older than 1 week (default)
- *   - '1month' : refresh if cache is older than 1 month (~30 days)
- *   - 'never'  : never proactively refresh — rely on the reactive
- *                recovery path that runs after a PlaybackError
- *
- * The reactive recovery path always runs regardless of this setting;
- * 'never' just disables the proactive optimisation.
- */
-export type MetadataRefreshThreshold =
-  | 'always'
-  | '1hour'
-  | '1day'
-  | '1week'
-  | '1month'
-  | 'never';
-export const METADATA_REFRESH_THRESHOLDS: MetadataRefreshThreshold[] = [
-  'always',
-  '1hour',
-  '1day',
-  '1week',
-  '1month',
-  'never',
-];
-
 export interface PlaybackSettingsState {
   /** Maximum bitrate for streaming. null = no limit (server default). */
   maxBitRate: MaxBitRate;
@@ -143,8 +105,6 @@ export interface PlaybackSettingsState {
   remoteControlMode: RemoteControlMode;
   /** Whether artist play/shuffle uses top songs or all songs. */
   artistPlayMode: ArtistPlayMode;
-  /** How aggressively to refresh album metadata before playback. */
-  metadataRefreshThreshold: MetadataRefreshThreshold;
 
   setMaxBitRate: (bitRate: MaxBitRate) => void;
   setStreamFormat: (format: StreamFormat) => void;
@@ -159,7 +119,6 @@ export interface PlaybackSettingsState {
   setSkipForwardInterval: (interval: SkipInterval) => void;
   setRemoteControlMode: (mode: RemoteControlMode) => void;
   setArtistPlayMode: (mode: ArtistPlayMode) => void;
-  setMetadataRefreshThreshold: (threshold: MetadataRefreshThreshold) => void;
 }
 
 const PERSIST_KEY = 'substreamer-playback-settings';
@@ -180,7 +139,6 @@ export const playbackSettingsStore = create<PlaybackSettingsState>()(
       skipForwardInterval: 30,
       remoteControlMode: 'skip-track',
       artistPlayMode: 'topSongs',
-      metadataRefreshThreshold: '1week',
 
       setMaxBitRate: (maxBitRate) => set({ maxBitRate }),
       setStreamFormat: (streamFormat) => set({ streamFormat: normalizeFormat(streamFormat) }),
@@ -195,8 +153,6 @@ export const playbackSettingsStore = create<PlaybackSettingsState>()(
       setSkipForwardInterval: (skipForwardInterval) => set({ skipForwardInterval }),
       setRemoteControlMode: (remoteControlMode) => set({ remoteControlMode }),
       setArtistPlayMode: (artistPlayMode) => set({ artistPlayMode }),
-      setMetadataRefreshThreshold: (metadataRefreshThreshold) =>
-        set({ metadataRefreshThreshold }),
     }),
     {
       name: PERSIST_KEY,
@@ -215,7 +171,6 @@ export const playbackSettingsStore = create<PlaybackSettingsState>()(
         skipForwardInterval: state.skipForwardInterval,
         remoteControlMode: state.remoteControlMode,
         artistPlayMode: state.artistPlayMode,
-        metadataRefreshThreshold: state.metadataRefreshThreshold,
       }),
     }
   )

@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import Ionicons from "@react-native-vector-icons/ionicons/static";
 import { FlashList } from '@shopify/flash-list';
+import { LIST_DRAW_DISTANCE } from '../constants/layout';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { useAnimatedStyle } from 'react-native-reanimated';
 import { useTranslation } from 'react-i18next';
@@ -595,6 +596,7 @@ export function PlaylistDetailScreen() {
           data={tracks}
           renderItem={renderItem}
           keyExtractor={keyExtractor}
+          drawDistance={LIST_DRAW_DISTANCE}
           ListHeaderComponent={listHeader}
           ListEmptyComponent={listEmpty}
           onScrollBeginDrag={closeOpenRow}

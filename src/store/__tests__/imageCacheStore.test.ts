@@ -11,6 +11,7 @@ let mockAggregates = {
 };
 jest.mock('../persistence/imageCacheTable', () => ({
   hydrateImageCacheAggregates: jest.fn(() => mockAggregates),
+  hydrateImageCacheAggregatesAsync: jest.fn(async () => mockAggregates),
 }));
 jest.mock('expo-sqlite', () => ({
   openDatabaseSync: () => ({
@@ -93,13 +94,13 @@ describe('imageCacheStore — hydrateFromDb', () => {
 });
 
 describe('imageCacheStore — recalculateFromDb', () => {
-  it('updates the four aggregates without touching hasHydrated or maxConcurrent', () => {
+  it('updates the four aggregates without touching hasHydrated or maxConcurrent', async () => {
     imageCacheStore.setState({
       hasHydrated: true,
       maxConcurrentImageDownloads: 10,
     });
     mockAggregates = { totalBytes: 777, fileCount: 3, imageCount: 1, incompleteCount: 1 };
-    imageCacheStore.getState().recalculateFromDb();
+    await imageCacheStore.getState().recalculateFromDb();
     const state = imageCacheStore.getState();
     expect(state.totalBytes).toBe(777);
     expect(state.fileCount).toBe(3);

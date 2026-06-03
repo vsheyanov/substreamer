@@ -16,6 +16,7 @@ describe('kvStorage (happy path)', () => {
       getFirstSync: mockGetFirstSync,
       getAllSync: jest.fn(),
       getAllAsync: jest.fn(),
+      getFirstAsync: jest.fn(),
       runSync: mockRunSync,
       execSync: jest.fn(),
       withTransactionSync: jest.fn(),

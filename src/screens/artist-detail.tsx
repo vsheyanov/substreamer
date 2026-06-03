@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import { FlashList } from '@shopify/flash-list';
+import { LIST_DRAW_DISTANCE } from '../constants/layout';
 import Ionicons from "@react-native-vector-icons/ionicons/static";
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { useAnimatedStyle } from 'react-native-reanimated';
@@ -381,6 +382,7 @@ export function ArtistDetailScreen() {
                   data={topSongs.slice(0, LIST_LENGTH_DISPLAY_CAP)}
                   renderItem={topSongsRenderItem}
                   keyExtractor={topSongsKeyExtractor}
+                  drawDistance={LIST_DRAW_DISTANCE}
                   horizontal
                   showsHorizontalScrollIndicator={false}
                   contentContainerStyle={styles.horizontalList}
@@ -399,6 +401,7 @@ export function ArtistDetailScreen() {
                   data={similarArtists}
                   renderItem={similarArtistsRenderItem}
                   keyExtractor={similarArtistsKeyExtractor}
+                  drawDistance={LIST_DRAW_DISTANCE}
                   horizontal
                   showsHorizontalScrollIndicator={false}
                   contentContainerStyle={styles.horizontalList}
@@ -533,6 +536,7 @@ export function ArtistDetailScreen() {
           data={sortedAlbums}
           renderItem={renderAlbumItem}
           keyExtractor={albumKeyExtractor}
+          drawDistance={LIST_DRAW_DISTANCE}
           ListHeaderComponent={listHeader}
           onScrollBeginDrag={closeOpenRow}
           showsVerticalScrollIndicator={false}

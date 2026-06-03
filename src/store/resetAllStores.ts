@@ -44,6 +44,7 @@ import { serverInfoStore } from './serverInfoStore';
 import { shareSettingsStore } from './shareSettingsStore';
 import { sharesStore } from './sharesStore';
 import { songIndexStore } from './songIndexStore';
+import { songLibraryStore } from './songLibraryStore';
 import { sslCertStore } from './sslCertStore';
 import { localeStore } from './localeStore';
 import { storageLimitStore } from './storageLimitStore';
@@ -99,6 +100,7 @@ const allStores = [
   shareSettingsStore,
   sharesStore,
   songIndexStore,
+  songLibraryStore,
   sslCertStore,
   storageLimitStore,
   syncStatusStore,

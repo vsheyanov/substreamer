@@ -62,10 +62,9 @@ export function rehydrateAllStores(): RehydrationResult {
     // eslint-disable-next-line no-console
     console.warn('[rehydrateAllStores] partial failure', result.failed);
   }
-  // The songs-library cache warm-up is owned by `startSongLibraryCacheAutoWarm`
-  // (started from the deferred-startup chain). A one-shot warm here was
-  // invalidated by the post-startup album-detail sync advancing
-  // `songIndexStore.mutationCounter`, so it's been moved to a resilient
-  // debounced auto-warmer that survives that churn.
+  // The songs-library list is built by `initSongLibrary` (called from the
+  // deferred-startup chain, after the data-load/refresh tasks settle) and then
+  // kept current by optimistic in-memory patches from `songIndexStore` writes —
+  // no full rebuild on every album-detail sync.
   return result;
 }

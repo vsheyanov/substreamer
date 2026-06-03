@@ -47,7 +47,7 @@ import { SetRatingSheet } from '../components/SetRatingSheet';
 import { SleepTimerSheet } from '../components/SleepTimerSheet';
 import { PlaybackToast } from '../components/PlaybackToast';
 import { ProcessingOverlay } from '../components/ProcessingOverlay';
-import { startSongLibraryCacheAutoWarm } from '../hooks/useAllSongsByTitle';
+import { initSongLibrary } from '../hooks/useAllSongsByTitle';
 import { useDownloadBackgroundNotification } from '../hooks/useDownloadBackgroundNotification';
 import { useDownloadKeepAwake } from '../hooks/useDownloadKeepAwake';
 import { useLayoutMode } from '../hooks/useLayoutMode';
@@ -242,10 +242,11 @@ async function runDeferredStartup(getCancelled: () => boolean): Promise<void> {
   await stage('deferredDataSyncInit', () => deferredDataSyncInit());
   if (getCancelled()) return;
 
-  // Keep the songs-library cache warm so the first tap on the Songs segment is
-  // an instant hit. Starts the initial warm + a debounced re-warm on every
-  // song-index mutation (the album-detail sync above churns the counter).
-  await stage('startSongLibraryCacheAutoWarm', () => { startSongLibraryCacheAutoWarm(); });
+  // Build the songs-library list once, now that the startup data-load/refresh
+  // tasks have settled, so the first tap on the Songs segment is an instant hit.
+  // Thereafter it's kept current by optimistic in-memory patches from song-index
+  // writes — no full rebuild on every album-detail sync.
+  await stage('initSongLibrary', () => { initSongLibrary(); });
   if (getCancelled()) return;
 
   // Recover any image-download-queue rows left stalled by a previous

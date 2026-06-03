@@ -1180,10 +1180,11 @@ async function processNext(): Promise<void> {
         uriCache.delete(uriCacheKey(coverArtId, s));
         getCachedImageUri(coverArtId, s);
       }
-      // Re-derive the aggregate totals from SQL once per completed
-      // coverArtId. Cheap (indexed scans) and keeps the store correct even
-      // when partial-variant failures leave some rows unwritten.
-      imageCacheStore.getState().recalculateFromDb();
+      // Re-derive the aggregate totals from SQL. Debounced: during a burst of
+      // completing downloads this coalesces many async scans into a handful
+      // (the cycle force-flushes at the end), so the JS thread never queues a
+      // scan per cover. The read itself is async regardless.
+      scheduleAggregateRecalc();
       resolveWaiters(coverArtId);
       // Schedule a timed retry when the source download threw OR the
       // cover is still incomplete after a non-throwing run (the resize
@@ -1645,7 +1646,7 @@ export async function refreshCoverArt(
       uriCache.delete(uriCacheKey(coverArtId, s));
       getCachedImageUri(coverArtId, s);
     }
-    imageCacheStore.getState().recalculateFromDb();
+    scheduleAggregateRecalc();
     resolveWaiters(coverArtId);
     const present = IMAGE_SIZES.filter((s) => getCachedImageUri(coverArtId, s) != null);
     const stillInDb = dbHasCachedImage(coverArtId, SOURCE_SIZE);

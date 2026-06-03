@@ -45,16 +45,13 @@ import {
   type Child,
 } from './subsonicService';
 import {
-  recoverStaleSongId,
-  refreshAndRecoverForPlay,
-} from './staleSongRecoveryService';
-import {
   buildPlayableQueue,
   childToTrack,
   mapRepeatMode,
   mapState,
   stampQueueFormat,
 } from './playerHelpers';
+import { logImageCache } from './imageCacheLogger';
 
 /* ------------------------------------------------------------------ */
 /*  Module state                                                       */
@@ -108,6 +105,18 @@ let isRecoveringStream = false;
  * Prevents intermediate tracks from being falsely scrobbled.
  */
 let isSettingQueue = false;
+/**
+ * Set when the app leaves the foreground; cleared once we've re-asserted the
+ * now-playing artwork after the next resume. iOS drops the external-surface
+ * (car head-unit) now-playing artwork after a long suspension and doesn't
+ * re-render it on resume without a metadata update event — even though the art
+ * is still in the now-playing center (the lock screen keeps showing it) and the
+ * file is still on disk. We re-push the active track's metadata on the first
+ * playback resume after a background period so the car self-heals without the
+ * user opening the app. Gated to once-per-background so it doesn't fire on every
+ * ordinary play/pause toggle.
+ */
+let needsArtworkRepushOnResume = false;
 /**
  * In-flight promise for an async queue-rehydration after a cold-start
  * restore. Consumers that touch the native queue (play/skip/seek, or
@@ -176,103 +185,6 @@ async function recoverTranscodedStream(adjustedPosition: number): Promise<void> 
     positionOffset = 0;
   } finally {
     isRecoveringStream = false;
-  }
-}
-
-/**
- * Set while a stale-ID recovery is in flight. Prevents the PlaybackError
- * listener from re-firing recovery for the same track while we're
- * already mid-swap; cleared when the swap finishes (success or fail).
- */
-let isRecoveringStaleId = false;
-
-/**
- * Cheap sync check: is there anything to even try recovering? Returns
- * false fast (no microtask scheduled) when recovery is plainly
- * inapplicable — important because the PlaybackError handler hits this
- * on every failure, including transient blips on offline / local /
- * incomplete tracks where the await would just waste a frame.
- */
-function shouldAttemptStaleIdRecovery(): boolean {
-  if (isRecoveringStaleId) return false;
-  if (offlineModeStore.getState().offlineMode) return false;
-
-  const store = playerStore.getState();
-  const current = store.currentTrack;
-  const idx = store.currentTrackIndex;
-  if (!current || idx === null) return false;
-
-  // Need at least one anchor for the match — either a parent album
-  // (cheapest path) or a title (search3 fallback).
-  if (!current.id) return false;
-  if (!current.albumId && !current.title) return false;
-
-  // Local files can't have a stale server ID; they're played from disk.
-  if (getLocalTrackUri(current.id)) return false;
-
-  return true;
-}
-
-/**
- * Attempt to swap the current track (and any other queued tracks from
- * the same album) when the server ID has gone stale (#146). Recovery
- * service handles SQL/disk persistence and the album-wide refresh;
- * this function only deals with the in-memory queue + native RNTP
- * queue swap-and-resume.
- *
- * Returns true if a swap-and-retry was performed (caller should NOT
- * fall through to the standard auto-retry); false if nothing changed.
- *
- * Callers must gate on `shouldAttemptStaleIdRecovery()` first so we
- * don't await for tracks that are clearly not recoverable.
- */
-async function performStaleIdSwap(): Promise<boolean> {
-  const store = playerStore.getState();
-  const current = store.currentTrack;
-  const idx = store.currentTrackIndex;
-  if (!current || idx === null) return false;
-
-  isRecoveringStaleId = true;
-  try {
-    const result = await recoverStaleSongId(current);
-    if (!result) return false;
-
-    // Walk the queue and swap in every fresh Child for any stale id in
-    // the recovery's album-wide map. Cheap O(n) over a typical queue.
-    const updatedQueue = store.queue.map((song) =>
-      result.swaps.get(song.id) ?? song,
-    );
-    playerStore.getState().setQueue(updatedQueue);
-    playerStore.getState().setCurrentTrack(result.current, idx);
-    // Persist the swap so the next app open's queue restore doesn't
-    // bring back the dead id and force another reactive recovery on
-    // first play — see #146 follow-up analysis.
-    persistQueue(updatedQueue, idx);
-    currentChildQueue = updatedQueue;
-
-    // Swap in the native queue: remove the dead track, insert the fresh
-    // one at the same index, jump to it. We can't use updateMetadataForTrack
-    // because the URL changes — the native player needs a full reload.
-    const newTrack = childToTrack(result.current);
-    if (!newTrack) return false;
-    await TrackPlayer.remove(idx);
-    await TrackPlayer.add(newTrack, idx);
-    await TrackPlayer.skip(idx);
-    await TrackPlayer.play();
-
-    console.warn(
-      '[Player] Stale-ID recovery: swapped',
-      current.id,
-      '→',
-      result.current.id,
-      `(${result.swaps.size} album-wide swaps)`,
-    );
-    return true;
-  } catch (e) {
-    console.warn('[Player] Stale-ID recovery failed:', e);
-    return false;
-  } finally {
-    isRecoveringStaleId = false;
   }
 }
 
@@ -385,6 +297,15 @@ export async function initPlayer(): Promise<void> {
       if (store.error) store.setError(null);
       if (store.retrying) store.setRetrying(false);
       rawRecoveryAttempts = 0;
+
+      // First resume after a background period (e.g. reconnecting to the car):
+      // re-assert now-playing metadata so the head unit re-renders the artwork
+      // it dropped during suspension. Fires in the background — no app
+      // foreground needed. Skipped mid-queue-build (add() already pushes art).
+      if (needsArtworkRepushOnResume && !isSettingQueue) {
+        needsArtworkRepushOnResume = false;
+        void repushNowPlayingArtwork();
+      }
     }
   });
 
@@ -415,22 +336,6 @@ export async function initPlayer(): Promise<void> {
           recoverRawStream(adjustedPos);
           return;
         }
-      }
-    }
-
-    // --- Stale-ID recovery (#146) ------------------------------------
-    // If the track never started (errorPosition near 0), the most likely
-    // cause beyond a transient network blip is a stale server ID: the
-    // server reindexed the file (Navidrome rescan, octo-fiesta
-    // permanentize) and our cached ID is dead. Try to re-fetch and swap
-    // in the fresh ID once before falling through to the standard retry.
-    // The sync gate keeps us out of the async path entirely when no
-    // recovery is even possible (offline, local file, no anchors).
-    if (!store.retrying && errorPosition < 5 && shouldAttemptStaleIdRecovery()) {
-      const swapped = await performStaleIdSwap();
-      if (swapped) {
-        store.setError(null);
-        return;
       }
     }
 
@@ -655,7 +560,19 @@ export async function initPlayer(): Promise<void> {
   const handleAppState = async (next: AppStateStatus) => {
     if (next === 'active') {
       await syncStoreFromNative();
+      // If we resumed straight to the foreground before any playback-resume
+      // event re-asserted the artwork, do it here. After a long suspension iOS
+      // doesn't re-render the car head unit's now-playing artwork without a
+      // metadata update event, even though the art is still on disk / on the
+      // lock screen. No queue reload — just refreshes the displayed metadata.
+      if (needsArtworkRepushOnResume) {
+        needsArtworkRepushOnResume = false;
+        await repushNowPlayingArtwork();
+      }
     } else {
+      // Mark that we've left the foreground so the next playback resume (or
+      // foreground) re-asserts the now-playing artwork to the car.
+      needsArtworkRepushOnResume = true;
       const { position, currentTrack } = playerStore.getState();
       if (currentTrack?.id && position > 0) {
         flushPosition(position, currentTrack.id);
@@ -728,6 +645,41 @@ async function syncStoreFromNative(): Promise<void> {
     playerStore.getState().setProgress(adjustedPosition, duration, maxBufferedSeen);
   } catch {
     // Player may not be ready yet; ignore.
+  }
+}
+
+/**
+ * Re-push the active track's now-playing metadata (incl. artwork) to RNTP
+ * without reloading the stream. Repairs the lock-screen / car-head-unit cover
+ * art that iOS drops after a long suspension (the bitmap is evicted and not
+ * re-rendered until a metadata update event, even though the file is still on
+ * disk). `updateMetadataForTrack` keeps the URL/position intact — no audio
+ * reload, unlike a queue rebuild.
+ */
+async function repushNowPlayingArtwork(): Promise<void> {
+  try {
+    const index = await TrackPlayer.getActiveTrackIndex();
+    if (index === undefined || index === null) return;
+    const activeTrack = await TrackPlayer.getActiveTrack();
+    if (!activeTrack?.id) return;
+    const child = currentChildQueue.find((c) => c.id === activeTrack.id);
+    if (!child) return;
+    const track = childToTrack(child);
+    if (!track) return;
+
+    logImageCache(
+      `player.repushArtwork id=${activeTrack.id} index=${index} artwork=${track.artwork ?? 'none'}`,
+    );
+
+    await TrackPlayer.updateMetadataForTrack(index, {
+      title: track.title,
+      artist: track.artist,
+      album: track.album,
+      artwork: track.artwork,
+      duration: track.duration,
+    });
+  } catch {
+    // Best-effort cosmetic refresh; never let it break the resume path.
   }
 }
 
@@ -1002,20 +954,7 @@ export async function playTrack(
     await waitForTrackMapsReady();
     await ensureCoverArtAuth();
 
-    // Proactive stale-ID recovery (#146 primary): refresh the source
-    // album BEFORE building the queue so dead IDs never reach the
-    // native player. Gated by the user's metadata-freshness threshold
-    // (skip when cache is fresh enough OR set to 'never'). Apply any
-    // album-wide swaps to the incoming track + queue.
-    let effectiveTrack = track;
-    let effectiveQueue = queue;
-    const proactive = await refreshAndRecoverForPlay(track);
-    if (proactive && proactive.swaps.size > 0) {
-      effectiveTrack = proactive.swaps.get(track.id) ?? track;
-      effectiveQueue = queue.map((c) => proactive.swaps.get(c.id) ?? c);
-    }
-
-    const { rnTracks, filteredQueue } = buildPlayableQueue(effectiveQueue);
+    const { rnTracks, filteredQueue } = buildPlayableQueue(queue);
 
     if (rnTracks.length === 0) {
       playbackToastStore.getState().fail(i18n.t('noOfflineTracksInQueue'));
@@ -1038,7 +977,7 @@ export async function playTrack(
     // Translate the tapped track onto the filtered queue. If the tapped
     // track isn't playable (non-cached + offline), start at 0 rather
     // than blocking — users expect something to happen.
-    let startIndex = filteredQueue.findIndex((c) => c.id === effectiveTrack.id);
+    let startIndex = filteredQueue.findIndex((c) => c.id === track.id);
     if (startIndex === -1) startIndex = 0;
 
     await TrackPlayer.reset();

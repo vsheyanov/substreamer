@@ -16,12 +16,23 @@
  */
 import { create } from 'zustand';
 
-import { hydrateImageCacheAggregates } from './persistence/imageCacheTable';
+import {
+  hydrateImageCacheAggregates,
+  hydrateImageCacheAggregatesAsync,
+} from './persistence/imageCacheTable';
 import { kvStorage } from './persistence';
 
 export type MaxConcurrentImageDownloads = 1 | 3 | 5 | 10;
 
 const SETTINGS_KEY = 'substreamer-image-cache-settings';
+
+/**
+ * Monotonic token for `recalculateFromDb`. Because the recalc read is async and
+ * fire-and-forget, several can be in flight at once (concurrent download
+ * completions). We stamp each call and only apply the result if it's still the
+ * latest — so an older, slower scan can't clobber a newer aggregate.
+ */
+let recalcToken = 0;
 const DEFAULT_MAX_CONCURRENT: MaxConcurrentImageDownloads = 5;
 
 interface ImageCacheSettings {
@@ -96,10 +107,10 @@ export interface ImageCacheState {
   /** True after the initial SQL aggregate read has populated the store. */
   hasHydrated: boolean;
 
-  /** Re-read every aggregate from SQL. Cheap — indexed scans only. Called
-   *  by the service layer after writes and by `rehydrateAllStores()` on
-   *  launch. Idempotent re-read; safe to call multiple times. */
-  recalculateFromDb: () => void;
+  /** Re-read every aggregate from SQL on a background native thread (async, so
+   *  it never blocks the JS thread). Called by the service layer after writes.
+   *  Fire-and-forget; overlapping calls are reconciled latest-wins. */
+  recalculateFromDb: () => Promise<void>;
   /** Called once at app start via `rehydrateAllStores()`. Pulls aggregates
    *  from SQL and reads the maxConcurrent setting from the KV blob. */
   hydrateFromDb: () => void;
@@ -118,8 +129,12 @@ export const imageCacheStore = create<ImageCacheState>()((set) => ({
   maxConcurrentImageDownloads: DEFAULT_MAX_CONCURRENT,
   hasHydrated: false,
 
-  recalculateFromDb: () => {
-    const agg = hydrateImageCacheAggregates();
+  recalculateFromDb: async () => {
+    const token = ++recalcToken;
+    const agg = await hydrateImageCacheAggregatesAsync();
+    // A newer recalc started while this scan was running — discard the stale
+    // result so we don't overwrite fresher aggregates.
+    if (token !== recalcToken) return;
     set({
       totalBytes: agg.totalBytes,
       fileCount: agg.fileCount,
@@ -141,13 +156,17 @@ export const imageCacheStore = create<ImageCacheState>()((set) => ({
     });
   },
 
-  reset: () =>
+  reset: () => {
+    // Invalidate any in-flight async recalc so a stale scan can't repopulate
+    // the aggregates after the rows have been dropped.
+    recalcToken++;
     set({
       totalBytes: 0,
       fileCount: 0,
       imageCount: 0,
       incompleteCount: 0,
-    }),
+    });
+  },
 
   setMaxConcurrentImageDownloads: (max) => {
     const existing = readSettingsBlob();

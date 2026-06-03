@@ -46,6 +46,12 @@ export interface InternalDb {
    * the songs-library pre-warm / cold fetch — see `fetchAllSongsByTitleAsync`.
    */
   getAllAsync<T>(sql: string, params?: readonly unknown[]): Promise<T[]>;
+  /**
+   * Async single-row read. Like `getAllAsync`, runs on a background native
+   * thread so the SQLite IO does not block the JS thread (unlike
+   * `getFirstSync`). Used for aggregate recalcs on interactive/hot paths.
+   */
+  getFirstAsync<T>(sql: string, params?: readonly unknown[]): Promise<T | null>;
   runSync(sql: string, params?: readonly unknown[]): RunResult;
   execSync(sql: string): void;
   withTransactionSync(fn: () => void): void;

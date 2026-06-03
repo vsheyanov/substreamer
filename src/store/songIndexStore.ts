@@ -5,6 +5,7 @@ import {
   deleteSongsForAlbums as dbDeleteSongsForAlbums,
   upsertSongsForAlbum as dbUpsertSongsForAlbum,
 } from './persistence/detailTables';
+import { songLibraryStore } from './songLibraryStore';
 import type { Child } from '../services/subsonicService';
 
 /**
@@ -42,6 +43,9 @@ export const songIndexStore = create<SongIndexState>()((set, get) => ({
 
   upsertSongsForAlbum: (albumId, songs) => {
     dbUpsertSongsForAlbum(albumId, songs);
+    // Optimistically patch the in-memory songs list instead of forcing a full
+    // rebuild — keeps the Songs segment fresh without re-reading the table.
+    songLibraryStore.getState().patchAlbum(albumId, songs);
     set({
       totalCount: countSongIndex(),
       mutationCounter: get().mutationCounter + 1,
@@ -51,6 +55,7 @@ export const songIndexStore = create<SongIndexState>()((set, get) => ({
   deleteSongsForAlbums: (albumIds) => {
     if (albumIds.length === 0) return;
     dbDeleteSongsForAlbums(albumIds);
+    songLibraryStore.getState().removeAlbums(albumIds);
     set({
       totalCount: countSongIndex(),
       mutationCounter: get().mutationCounter + 1,
