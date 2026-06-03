@@ -1,7 +1,9 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
-import { kvStorage } from './persistence';
+// Synchronous adapter: `hasCompleted` gates the onboarding modal at boot —
+// async hydration would flash the guide for returning users.
+import { kvStorageSync as kvStorage } from './persistence';
 
 interface OnboardingState {
   /** Whether the user has completed (or skipped) the onboarding guide. Persisted. */

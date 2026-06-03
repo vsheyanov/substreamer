@@ -1,7 +1,9 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
-import { kvStorage } from './persistence';
+// Synchronous adapter: `isLoggedIn` gates the login redirect at boot — async
+// hydration would flash the logged-out state then bounce.
+import { kvStorageSync as kvStorage } from './persistence';
 
 export type ServerSlot = 'primary' | 'secondary';
 export type ServerSwitchMode = 'manual' | 'automatic';

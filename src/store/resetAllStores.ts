@@ -5,7 +5,9 @@
  * Backup files on disk are intentionally preserved.
  */
 
-import { kvStorage, clearKvStorage } from './persistence';
+// Synchronous adapter: the hand-rolled settings-blob keys are removed
+// synchronously alongside the rest of the logout teardown.
+import { kvStorageSync as kvStorage, clearKvStorage } from './persistence';
 import { clearDetailTables } from './persistence/detailTables';
 import { clearPendingScrobbles } from './persistence/pendingScrobbleTable';
 import { clearScrobbles } from './persistence/scrobbleTable';

@@ -28,7 +28,9 @@ import {
 } from '../services/migrationService';
 import { rehydrateAllStores } from '../store/persistence/rehydrate';
 import { migrationStore } from '../store/migrationStore';
-import { kvStorage } from '../store/persistence';
+// Synchronous adapter: the splash reads `completedVersion` before the store
+// has hydrated, so it must be a synchronous SQLite read.
+import { kvStorageSync as kvStorage } from '../store/persistence';
 
 /**
  * Max time (ms) before we force-finish, even if an animation or

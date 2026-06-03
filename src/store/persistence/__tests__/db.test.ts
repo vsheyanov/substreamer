@@ -133,6 +133,7 @@ describe('persistence/db (happy path)', () => {
         getAllAsync: jest.fn(),
         getFirstAsync: jest.fn(),
         runSync: jest.fn(),
+        runAsync: jest.fn(),
         execSync: jest.fn(),
         withTransactionSync: jest.fn(),
       };

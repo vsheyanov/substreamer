@@ -1,7 +1,9 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
-import { kvStorage } from './persistence';
+// Synchronous adapter: theme must be hydrated before first paint — async
+// hydration would reintroduce the startup white/wrong-mode flash.
+import { kvStorageSync as kvStorage } from './persistence';
 
 export type ThemePreference = 'light' | 'dark' | 'system';
 

@@ -1,11 +1,14 @@
 jest.mock('../persistence/kvStorage', () => {
   const mock = require('../persistence/__mocks__/kvStorage');
+  // resetAllStores removes the hand-rolled settings-blob keys via the *sync*
+  // adapter. Share one removeItem spy across both names so existing
+  // `kvStorage.removeItem` assertions observe the production `kvStorageSync`
+  // calls.
+  const removeItem = jest.fn();
   return {
     ...mock,
-    kvStorage: {
-      ...mock.kvStorage,
-      removeItem: jest.fn(),
-    },
+    kvStorage: { ...mock.kvStorage, removeItem },
+    kvStorageSync: { ...mock.kvStorageSync, removeItem },
     clearKvStorage: jest.fn(),
   };
 });

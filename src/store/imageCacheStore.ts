@@ -20,7 +20,9 @@ import {
   hydrateImageCacheAggregates,
   hydrateImageCacheAggregatesAsync,
 } from './persistence/imageCacheTable';
-import { kvStorage } from './persistence';
+// Synchronous adapter: the settings blob is read via a synchronous helper;
+// the aggregates hydrate via async SQL (see hydrateFromDbAsync).
+import { kvStorageSync as kvStorage } from './persistence';
 
 export type MaxConcurrentImageDownloads = 1 | 3 | 5 | 10;
 

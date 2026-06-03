@@ -1,4 +1,6 @@
-import { kvStorage } from '../store/persistence';
+// Synchronous adapter: queue/position blobs are persisted and restored through
+// a synchronous API consumed at player init.
+import { kvStorageSync as kvStorage } from '../store/persistence';
 import { type Child } from './subsonicService';
 
 const QUEUE_KEY = 'substreamer-persisted-queue';

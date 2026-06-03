@@ -53,6 +53,12 @@ export interface InternalDb {
    */
   getFirstAsync<T>(sql: string, params?: readonly unknown[]): Promise<T | null>;
   runSync(sql: string, params?: readonly unknown[]): RunResult;
+  /**
+   * Async write. Like `getAllAsync`/`getFirstAsync`, expo-sqlite runs this on
+   * a background native thread so the write IO does not block the JS thread
+   * (unlike `runSync`). Used by the async `kvStorage` adapter.
+   */
+  runAsync(sql: string, params?: readonly unknown[]): Promise<RunResult>;
   execSync(sql: string): void;
   withTransactionSync(fn: () => void): void;
 }

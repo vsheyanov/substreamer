@@ -1,7 +1,9 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 
-import { kvStorage } from './persistence';
+// Synchronous adapter: locale is read at i18n init before first paint — async
+// hydration would flash English then switch.
+import { kvStorageSync as kvStorage } from './persistence';
 
 export interface LocaleState {
   /** User's explicit locale choice, or null to follow the device setting. */

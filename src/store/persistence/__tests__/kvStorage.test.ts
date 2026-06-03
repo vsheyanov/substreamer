@@ -1,11 +1,15 @@
-// kvStorage now delegates to the shared handle owned by db.ts. Tests
-// inject a fake handle via db.ts's `__setDbForTests`; the in-memory
-// fallback path is exercised by setting the handle to null.
+// The kvStorage adapters delegate to the shared handle owned by db.ts. Tests
+// inject a fake handle via db.ts's `__setDbForTests`; the in-memory fallback
+// path is exercised by setting the handle to null.
+//
+// There are two adapters: `kvStorageSync` (getFirstSync/runSync) for
+// flash-critical + hand-rolled sync callers, and `kvStorage` (getFirstAsync/
+// runAsync) — the async default whose SQLite IO runs off the JS thread.
 
 import { __setDbForTests, kvFallback } from '../db';
-import { kvStorage, clearKvStorage } from '../kvStorage';
+import { kvStorage, kvStorageSync, clearKvStorage } from '../kvStorage';
 
-describe('kvStorage (happy path)', () => {
+describe('kvStorageSync (happy path)', () => {
   let mockGetFirstSync: jest.Mock;
   let mockRunSync: jest.Mock;
 
@@ -18,6 +22,7 @@ describe('kvStorage (happy path)', () => {
       getAllAsync: jest.fn(),
       getFirstAsync: jest.fn(),
       runSync: mockRunSync,
+      runAsync: jest.fn(),
       execSync: jest.fn(),
       withTransactionSync: jest.fn(),
     });
@@ -30,7 +35,7 @@ describe('kvStorage (happy path)', () => {
   describe('getItem', () => {
     it('returns value when row exists', () => {
       mockGetFirstSync.mockReturnValue({ value: '{"count":1}' });
-      expect(kvStorage.getItem('my-key')).toBe('{"count":1}');
+      expect(kvStorageSync.getItem('my-key')).toBe('{"count":1}');
       expect(mockGetFirstSync).toHaveBeenCalledWith(
         'SELECT value FROM storage WHERE key = ?;',
         ['my-key'],
@@ -39,20 +44,20 @@ describe('kvStorage (happy path)', () => {
 
     it('returns null when row does not exist', () => {
       mockGetFirstSync.mockReturnValue(undefined);
-      expect(kvStorage.getItem('missing')).toBeNull();
+      expect(kvStorageSync.getItem('missing')).toBeNull();
     });
 
     it('returns null when getFirstSync throws (per-call failure)', () => {
       mockGetFirstSync.mockImplementation(() => {
         throw new Error('disk i/o');
       });
-      expect(kvStorage.getItem('any')).toBeNull();
+      expect(kvStorageSync.getItem('any')).toBeNull();
     });
   });
 
   describe('setItem', () => {
     it('inserts or replaces the key-value pair', () => {
-      kvStorage.setItem('my-key', '{"count":1}');
+      kvStorageSync.setItem('my-key', '{"count":1}');
       expect(mockRunSync).toHaveBeenCalledWith(
         'INSERT OR REPLACE INTO storage (key, value) VALUES (?, ?);',
         ['my-key', '{"count":1}'],
@@ -63,13 +68,13 @@ describe('kvStorage (happy path)', () => {
       mockRunSync.mockImplementation(() => {
         throw new Error('disk full');
       });
-      expect(() => kvStorage.setItem('any', 'v')).not.toThrow();
+      expect(() => kvStorageSync.setItem('any', 'v')).not.toThrow();
     });
   });
 
   describe('removeItem', () => {
     it('deletes the row by key', () => {
-      kvStorage.removeItem('my-key');
+      kvStorageSync.removeItem('my-key');
       expect(mockRunSync).toHaveBeenCalledWith(
         'DELETE FROM storage WHERE key = ?;',
         ['my-key'],
@@ -80,7 +85,7 @@ describe('kvStorage (happy path)', () => {
       mockRunSync.mockImplementation(() => {
         throw new Error('disk i/o');
       });
-      expect(() => kvStorage.removeItem('any')).not.toThrow();
+      expect(() => kvStorageSync.removeItem('any')).not.toThrow();
     });
   });
 
@@ -99,34 +104,117 @@ describe('kvStorage (happy path)', () => {
   });
 });
 
-describe('kvStorage (db unavailable → in-memory fallback)', () => {
+describe('kvStorage (async, happy path)', () => {
+  let mockGetFirstAsync: jest.Mock;
+  let mockRunAsync: jest.Mock;
+
+  beforeEach(() => {
+    mockGetFirstAsync = jest.fn();
+    mockRunAsync = jest.fn().mockResolvedValue({ changes: 1, lastInsertRowId: 0 });
+    __setDbForTests({
+      getFirstSync: jest.fn(),
+      getAllSync: jest.fn(),
+      getAllAsync: jest.fn(),
+      getFirstAsync: mockGetFirstAsync,
+      runSync: jest.fn(),
+      runAsync: mockRunAsync,
+      execSync: jest.fn(),
+      withTransactionSync: jest.fn(),
+    });
+  });
+
+  afterAll(() => {
+    __setDbForTests(null);
+  });
+
+  describe('getItem', () => {
+    it('returns value when row exists', async () => {
+      mockGetFirstAsync.mockResolvedValue({ value: '{"count":1}' });
+      await expect(kvStorage.getItem('my-key')).resolves.toBe('{"count":1}');
+      expect(mockGetFirstAsync).toHaveBeenCalledWith(
+        'SELECT value FROM storage WHERE key = ?;',
+        ['my-key'],
+      );
+    });
+
+    it('returns null when row does not exist', async () => {
+      mockGetFirstAsync.mockResolvedValue(null);
+      await expect(kvStorage.getItem('missing')).resolves.toBeNull();
+    });
+
+    it('returns null when getFirstAsync rejects (per-call failure)', async () => {
+      mockGetFirstAsync.mockRejectedValue(new Error('disk i/o'));
+      await expect(kvStorage.getItem('any')).resolves.toBeNull();
+    });
+  });
+
+  describe('setItem', () => {
+    it('inserts or replaces the key-value pair', async () => {
+      await kvStorage.setItem('my-key', '{"count":1}');
+      expect(mockRunAsync).toHaveBeenCalledWith(
+        'INSERT OR REPLACE INTO storage (key, value) VALUES (?, ?);',
+        ['my-key', '{"count":1}'],
+      );
+    });
+
+    it('swallows runAsync failures', async () => {
+      mockRunAsync.mockRejectedValue(new Error('disk full'));
+      await expect(kvStorage.setItem('any', 'v')).resolves.toBeUndefined();
+    });
+  });
+
+  describe('removeItem', () => {
+    it('deletes the row by key', async () => {
+      await kvStorage.removeItem('my-key');
+      expect(mockRunAsync).toHaveBeenCalledWith(
+        'DELETE FROM storage WHERE key = ?;',
+        ['my-key'],
+      );
+    });
+
+    it('swallows runAsync failures', async () => {
+      mockRunAsync.mockRejectedValue(new Error('disk i/o'));
+      await expect(kvStorage.removeItem('any')).resolves.toBeUndefined();
+    });
+  });
+});
+
+describe('kvStorage adapters (db unavailable → in-memory fallback)', () => {
   beforeEach(() => {
     __setDbForTests(null);
     kvFallback.clear();
   });
 
-  it('round-trips values via the kvFallback Map', () => {
-    kvStorage.setItem('alpha', 'one');
-    kvStorage.setItem('beta', 'two');
-    expect(kvStorage.getItem('alpha')).toBe('one');
-    expect(kvStorage.getItem('beta')).toBe('two');
+  it('sync adapter round-trips values via the kvFallback Map', () => {
+    kvStorageSync.setItem('alpha', 'one');
+    kvStorageSync.setItem('beta', 'two');
+    expect(kvStorageSync.getItem('alpha')).toBe('one');
+    expect(kvStorageSync.getItem('beta')).toBe('two');
   });
 
-  it('returns null for keys never set', () => {
-    expect(kvStorage.getItem('never-set')).toBeNull();
+  it('async adapter round-trips values via the same kvFallback Map', async () => {
+    await kvStorage.setItem('alpha', 'one');
+    await expect(kvStorage.getItem('alpha')).resolves.toBe('one');
+    // Written by the async adapter, readable by the sync adapter (shared Map).
+    expect(kvStorageSync.getItem('alpha')).toBe('one');
   });
 
-  it('removeItem deletes from the fallback Map', () => {
-    kvStorage.setItem('gamma', 'three');
-    kvStorage.removeItem('gamma');
-    expect(kvStorage.getItem('gamma')).toBeNull();
+  it('returns null for keys never set', async () => {
+    expect(kvStorageSync.getItem('never-set')).toBeNull();
+    await expect(kvStorage.getItem('never-set')).resolves.toBeNull();
+  });
+
+  it('removeItem deletes from the fallback Map', async () => {
+    await kvStorage.setItem('gamma', 'three');
+    await kvStorage.removeItem('gamma');
+    await expect(kvStorage.getItem('gamma')).resolves.toBeNull();
   });
 
   it('clearKvStorage empties the fallback Map', () => {
-    kvStorage.setItem('delta', 'four');
-    kvStorage.setItem('epsilon', 'five');
+    kvStorageSync.setItem('delta', 'four');
+    kvStorageSync.setItem('epsilon', 'five');
     clearKvStorage();
-    expect(kvStorage.getItem('delta')).toBeNull();
-    expect(kvStorage.getItem('epsilon')).toBeNull();
+    expect(kvStorageSync.getItem('delta')).toBeNull();
+    expect(kvStorageSync.getItem('epsilon')).toBeNull();
   });
 });

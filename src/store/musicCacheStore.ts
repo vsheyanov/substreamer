@@ -46,7 +46,9 @@ import {
   type CachedSongRow,
   type DownloadQueueRow,
 } from './persistence/musicCacheTables';
-import { kvStorage } from './persistence';
+// Synchronous adapter: the settings blob (maxConcurrentDownloads) is read via
+// a synchronous helper; the bulk cache data hydrates via per-row tables.
+import { kvStorageSync as kvStorage } from './persistence';
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */

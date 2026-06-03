@@ -65,7 +65,9 @@ import {
   resetErrorRowsForCycle,
   resetStalledImageRows,
 } from '../store/persistence/imageDownloadQueueTable';
-import { kvStorage } from '../store/persistence';
+// Synchronous adapter: the image-queue meta blob is read/written through a
+// synchronous hand-rolled API (see readImageQueueState / writeImageQueueState).
+import { kvStorageSync as kvStorage } from '../store/persistence';
 import { awaitFirstPing } from './connectivityService';
 import { logImageCache } from './imageCacheLogger';
 import {

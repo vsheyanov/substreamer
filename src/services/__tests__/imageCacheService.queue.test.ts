@@ -163,13 +163,16 @@ jest.mock('../../store/persistence/imageDownloadQueueTable', () => ({
 
 // kvStorage — back the meta with an in-test Map.
 const mockKvStore = new Map<string, string>();
-jest.mock('../../store/persistence/kvStorage', () => ({
-  kvStorage: {
+jest.mock('../../store/persistence/kvStorage', () => {
+  const adapter = {
     getItem: (k: string) => mockKvStore.get(k) ?? null,
     setItem: (k: string, v: string) => { mockKvStore.set(k, v); },
     removeItem: (k: string) => { mockKvStore.delete(k); },
-  },
-}));
+  };
+  // imageCacheService reads the queue-meta blob via the sync adapter; expose
+  // both names backed by the same in-memory map.
+  return { kvStorage: adapter, kvStorageSync: adapter };
+});
 
 // Snapshot helpers in musicCacheTables. Two-source dedup is exercised
 // via these returning predictable sets.

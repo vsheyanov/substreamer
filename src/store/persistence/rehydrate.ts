@@ -1,10 +1,20 @@
 import { albumDetailStore } from '../albumDetailStore';
+import { albumLibraryStore } from '../albumLibraryStore';
+import { albumListsStore } from '../albumListsStore';
+import { artistLibraryStore } from '../artistLibraryStore';
+import { autoOfflineStore } from '../autoOfflineStore';
 import { completedScrobbleStore } from '../completedScrobbleStore';
+import { favoritesStore } from '../favoritesStore';
+import { genreStore } from '../genreStore';
 import { imageCacheStore } from '../imageCacheStore';
 import { imageDownloadQueueStore } from '../imageDownloadQueueStore';
 import { musicCacheStore } from '../musicCacheStore';
+import { offlineModeStore } from '../offlineModeStore';
 import { pendingScrobbleStore } from '../pendingScrobbleStore';
+import { playlistLibraryStore } from '../playlistLibraryStore';
+import { serverInfoStore } from '../serverInfoStore';
 import { songIndexStore } from '../songIndexStore';
+import { syncStatusStore } from '../syncStatusStore';
 
 export interface RehydrationResult {
   succeeded: string[];
@@ -77,4 +87,56 @@ export async function rehydrateAllStores(): Promise<RehydrationResult> {
   // kept current by optimistic in-memory patches from `songIndexStore` writes —
   // no full rebuild on every album-detail sync.
   return result;
+}
+
+/**
+ * Stores that back the startup data-sync flow and are persisted via the
+ * **async** `kvStorage` adapter. Because async hydration completes a microtask
+ * after store creation, the startup chain must wait for these before it reads
+ * them — otherwise `onStartup()`'s library-vs-detail comparison
+ * (`dataSyncService.ts`) sees an empty `albumLibraryStore` and the
+ * `offlineMode`/`autoOffline` branch decisions read stale defaults, which can
+ * trigger a spurious "full library resync".
+ *
+ * Only the startup-critical stores are listed. The rest of the async persist
+ * stores (bookmarks, lyrics, shares, settings, …) are read lazily by UI that
+ * re-renders reactively on hydration, so they don't need gating.
+ */
+const STARTUP_KV_STORES = [
+  offlineModeStore,
+  autoOfflineStore,
+  albumLibraryStore,
+  artistLibraryStore,
+  playlistLibraryStore,
+  albumListsStore,
+  favoritesStore,
+  genreStore,
+  serverInfoStore,
+  syncStatusStore,
+];
+
+/**
+ * Resolve once every startup-critical async-persisted store has finished
+ * hydrating. Stores already hydrated resolve immediately; the rest are awaited
+ * via Zustand's `persist.onFinishHydration`. Call before the startup chain
+ * reads these stores. The flash-critical stores (theme/locale/auth/onboarding)
+ * use the synchronous adapter and are always hydrated at first render, so they
+ * are intentionally absent here.
+ */
+export async function awaitKvHydration(): Promise<void> {
+  await Promise.all(
+    STARTUP_KV_STORES.map(
+      (store) =>
+        new Promise<void>((resolve) => {
+          if (store.persist.hasHydrated()) {
+            resolve();
+            return;
+          }
+          const unsub = store.persist.onFinishHydration(() => {
+            unsub();
+            resolve();
+          });
+        }),
+    ),
+  );
 }

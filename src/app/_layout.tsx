@@ -79,7 +79,7 @@ import { runAutoBackupIfNeeded } from '../services/backupService';
 import { startAutoOffline, stopAutoOffline } from '../services/autoOfflineService';
 import { excludeFromBackup } from 'expo-backup-exclusions';
 import { moveToBack } from 'expo-move-to-back';
-import { rehydrateAllStores } from '../store/persistence/rehydrate';
+import { awaitKvHydration, rehydrateAllStores } from '../store/persistence/rehydrate';
 import { albumListsStore } from '../store/albumListsStore';
 import { musicCacheStore } from '../store/musicCacheStore';
 import { authStore } from '../store/authStore';
@@ -87,7 +87,9 @@ import { autoOfflineStore } from '../store/autoOfflineStore';
 import { certPromptStore } from '../store/certPromptStore';
 import { initializeOfflineFilterBarSync, offlineModeStore } from '../store/offlineModeStore';
 import { playerStore } from '../store/playerStore';
-import { kvStorage } from '../store/persistence';
+// Synchronous adapter: the pre-render native-color-scheme read needs a
+// synchronous result before first paint (see the module-scope IIFE below).
+import { kvStorageSync as kvStorage } from '../store/persistence';
 import { tabletLayoutStore } from '../store/tabletLayoutStore';
 import i18n from '../i18n/i18n';
 
@@ -471,6 +473,12 @@ export default function RootLayout() {
     // on every launch.
     void (async () => {
       await rehydrateAllStores();
+      // Also wait for the startup-critical async-persisted kvStorage stores
+      // (offlineMode, the library lists, etc.). They hydrate a microtask after
+      // store creation; reading them before that resolves would make the
+      // resync comparison and offline/auto-offline branch decisions below act
+      // on empty defaults.
+      await awaitKvHydration();
       if (cancelled) return;
       initPlayer();
       initScrobbleService();
