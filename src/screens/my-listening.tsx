@@ -145,14 +145,6 @@ export function MyListeningScreen() {
 
   const analytics = usePlaybackAnalytics(completedScrobbles, period, pendingScrobbles, aggregates);
 
-  // Memoized: copying + sorting the whole history just to take the latest 20
-  // shouldn't re-run on every unrelated re-render (period change, refresh flag).
-  // MUST stay above the early returns below — hooks run unconditionally.
-  const recentScrobbles = useMemo(
-    () => [...completedScrobbles].sort((a, b) => b.time - a.time).slice(0, 20),
-    [completedScrobbles],
-  );
-
   const handlePeriodChange = useCallback((p: TimePeriod) => {
     setPeriod(p);
   }, []);
@@ -238,6 +230,13 @@ export function MyListeningScreen() {
     value: count,
     label: hourLabels[i],
   }));
+
+  // Latest 20 for the "recent" list. Plain expression (not a hook) so it
+  // stays below the early returns and never runs on the loading-spinner
+  // render — matching the original behavior.
+  const recentScrobbles = [...completedScrobbles]
+    .sort((a, b) => b.time - a.time)
+    .slice(0, 20);
 
   return (
     <GradientBackground scrollable>
