@@ -54,7 +54,7 @@ export const AlbumCard = memo(function AlbumCard({
           {(downloaded || partial || starred) && (
             <View style={styles.indicators}>
               {downloaded && <DownloadedIcon size={14} circleColor={colors.primary} arrowColor="#fff" />}
-              {partial && <DownloadedIcon size={14} circleColor={colors.orange} arrowColor="#fff" />}
+              {partial && <DownloadedIcon size={14} circleColor={colors.partialDownload} arrowColor="#fff" />}
               {starred && <Ionicons name="heart" size={14} color={colors.red} />}
             </View>
           )}

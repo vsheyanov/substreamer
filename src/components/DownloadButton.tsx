@@ -108,7 +108,7 @@ export const DownloadButton = memo(function DownloadButton({
         ) : downloadStatus === 'complete' ? (
           <DownloadedIcon size={size} circleColor={colors.primary} arrowColor="#fff" />
         ) : downloadStatus === 'partial' ? (
-          <DownloadedIcon size={size} circleColor={colors.orange} arrowColor="#fff" />
+          <DownloadedIcon size={size} circleColor={colors.partialDownload} arrowColor="#fff" />
         ) : downloadStatus === 'queued' ? (
           <ActivityIndicator size={size} color={colors.primary} />
         ) : (

@@ -11,6 +11,11 @@ export interface ThemeColors {
   red: string;
   green: string;
   orange: string;
+  /** Colour of the "partially downloaded" album/playlist indicator (the
+   * header download button + every row/card partial badge). Its own semantic
+   * token so the partial state is consistent everywhere and tunable in one
+   * place, independent of the generic `orange`. */
+  partialDownload: string;
   inputBg: string;
 }
 
@@ -25,6 +30,7 @@ export const lightTheme: ThemeColors = {
   red: '#e91429',
   green: '#34C759',
   orange: '#FF9500',
+  partialDownload: '#FF9500',
   inputBg: '#e5e5e5',
 };
 
@@ -39,6 +45,7 @@ export const darkTheme: ThemeColors = {
   red: '#e91429',
   green: '#30D158',
   orange: '#FF9F0A',
+  partialDownload: '#FF9F0A',
   inputBg: '#282828',
 };
 

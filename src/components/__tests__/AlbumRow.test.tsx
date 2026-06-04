@@ -19,6 +19,7 @@ jest.mock('../../hooks/useTheme', () => ({
       primary: '#1D9BF0',
       red: '#e91429',
       orange: '#FF9500',
+      partialDownload: '#FF9500',
     },
   }),
 }));

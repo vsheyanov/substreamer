@@ -105,7 +105,7 @@ export function RowMetaLine(props: RowMetaLineProps) {
     downloadStatus === 'complete' ? (
       <DownloadedIcon size={14} circleColor={colors.primary} arrowColor="#fff" />
     ) : downloadStatus === 'partial' ? (
-      <DownloadedIcon size={14} circleColor={colors.orange} arrowColor="#fff" />
+      <DownloadedIcon size={14} circleColor={colors.partialDownload} arrowColor="#fff" />
     ) : null;
 
   // TODO(rtl): `textAlign: 'right'` and the per-slot fixed widths don't
