@@ -128,13 +128,25 @@ try {
        starred INTEGER,
        year INTEGER,
        track INTEGER,
-       disc INTEGER
+       disc INTEGER,
+       raw_json TEXT
      );`,
   );
-  // Forward-compat: add `album` column to pre-existing installs.
-  // SQLite's ADD COLUMN is non-destructive and idempotent via the try/catch.
+  // Forward-compat: add columns to pre-existing installs. SQLite's ADD COLUMN
+  // is non-destructive and idempotent via the try/catch.
   try {
     db.execSync('ALTER TABLE song_index ADD COLUMN album TEXT;');
+  } catch {
+    /* column already exists */
+  }
+  // `raw_json` preserves the full Subsonic `Child` envelope so the Songs list
+  // returns the real song object (artistId, genre, format, ReplayGain, …)
+  // instead of a reconstruction from the indexed columns. The other columns
+  // exist only for sort/filter (title, starred) and as a legacy fallback for
+  // rows written before this column. Backfilled by a migration; written by
+  // every upsert going forward.
+  try {
+    db.execSync('ALTER TABLE song_index ADD COLUMN raw_json TEXT;');
   } catch {
     /* column already exists */
   }

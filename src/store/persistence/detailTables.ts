@@ -171,8 +171,8 @@ export function upsertSongsForAlbum(albumId: string, songs: Child[]): void {
         if (!song.id) continue;
         db.runSync(
           `INSERT OR REPLACE INTO song_index
-             (id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+             (id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc, raw_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
           [
             song.id,
             albumId,
@@ -186,6 +186,7 @@ export function upsertSongsForAlbum(albumId: string, songs: Child[]): void {
             song.year ?? null,
             song.track ?? null,
             song.discNumber ?? null,
+            JSON.stringify(song),
           ],
         );
       }
@@ -213,8 +214,8 @@ export async function upsertSongsForAlbumAsync(albumId: string, songs: Child[]):
         // eslint-disable-next-line no-await-in-loop
         await db.runAsync(
           `INSERT OR REPLACE INTO song_index
-             (id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+             (id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc, raw_json)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
           [
             song.id,
             albumId,
@@ -228,6 +229,7 @@ export async function upsertSongsForAlbumAsync(albumId: string, songs: Child[]):
             song.year ?? null,
             song.track ?? null,
             song.discNumber ?? null,
+            JSON.stringify(song),
           ],
         );
       }
@@ -307,6 +309,9 @@ interface SongIndexRow {
   year: number | null;
   track: number | null;
   disc: number | null;
+  /** Full serialized Subsonic `Child` envelope. Null only for rows written
+   * before the column existed (pre-backfill). */
+  raw_json: string | null;
 }
 
 interface SongsByTitleOpts {
@@ -324,15 +329,30 @@ function buildSongsByTitleSql(opts: SongsByTitleOpts): string {
     ` ${prefix}artist AS artist, ${prefix}album AS album,` +
     ` ${prefix}duration AS duration, ${prefix}coverArt AS coverArt,` +
     ` ${prefix}userRating AS userRating, ${prefix}starred AS starred, ${prefix}year AS year,` +
-    ` ${prefix}track AS track, ${prefix}disc AS disc` +
+    ` ${prefix}track AS track, ${prefix}disc AS disc, ${prefix}raw_json AS raw_json` +
     ` FROM song_index${useJoin ? ' s INNER JOIN cached_songs c ON c.song_id = s.id' : ''}` +
     (wantFavorites ? ` WHERE ${prefix}starred = 1` : '') +
     ` ORDER BY (${prefix}title IS NULL), lower(${prefix}title), ${prefix}id;`
   );
 }
 
-/** Map one `song_index` row to the `Child` shape used by the library list. */
+/**
+ * Map one `song_index` row to the `Child` used by the library list.
+ *
+ * Prefer the full stored envelope (`raw_json`) so the songs list returns the
+ * real server `Child` with ALL metadata (artistId, genre, format, ReplayGain,
+ * contributors, MusicBrainz ids, …) — not a reconstruction that silently drops
+ * fields. Falls back to the indexed columns only for legacy rows written
+ * before `raw_json` existed (until the backfill migration / next album fetch).
+ */
 function mapSongRow(r: SongIndexRow): Child {
+  if (r.raw_json) {
+    try {
+      return JSON.parse(r.raw_json) as Child;
+    } catch {
+      /* fall through to the column-reconstructed Child */
+    }
+  }
   return {
     id: r.id,
     albumId: r.albumId,

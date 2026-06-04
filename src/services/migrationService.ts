@@ -2045,6 +2045,60 @@ const MIGRATION_TASKS: MigrationTask[] = [
     },
   },
 
+  {
+    id: 28,
+    name: 'Backfill song_index.raw_json from album_details',
+    run: async (log) => {
+      // `raw_json` (the full Subsonic Child envelope) was added to song_index
+      // so the Songs list returns the complete song object instead of a
+      // reconstruction from the indexed columns (which dropped artistId, genre,
+      // etc. — breaking "Go to artist"). Pre-existing rows have NULL until the
+      // next album fetch re-upserts them; backfill from the locally cached
+      // album_details envelope (which holds every song's full Child) so the
+      // fix applies immediately, no network required.
+      try {
+        const { getDb } = require('./../store/persistence/db') as {
+          getDb: () => any;
+        };
+        const db = getDb();
+        if (db === null) {
+          log('[m28] db unavailable — skipping');
+          return;
+        }
+        const details = db.getAllSync(
+          'SELECT json FROM album_details;',
+        ) as { json: string }[];
+        if (details.length === 0) {
+          log('[m28] no album_details rows — nothing to backfill');
+          return;
+        }
+        let updated = 0;
+        db.withTransactionSync(() => {
+          for (const row of details) {
+            let songs: any[];
+            try {
+              const parsed = JSON.parse(row.json);
+              songs = Array.isArray(parsed?.song) ? parsed.song : [];
+            } catch {
+              continue;
+            }
+            for (const song of songs) {
+              if (!song?.id) continue;
+              const res = db.runSync(
+                'UPDATE song_index SET raw_json = ? WHERE id = ? AND raw_json IS NULL;',
+                [JSON.stringify(song), song.id],
+              );
+              updated += res.changes ?? 0;
+            }
+          }
+        });
+        log(`[m28] backfilled raw_json on ${updated} song_index rows`);
+      } catch (e) {
+        log(`[m28] backfill failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    },
+  },
+
   // -------------------------------------------------------------------
   // TEMPLATE – How to add a new migration task:
   //
