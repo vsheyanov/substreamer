@@ -180,6 +180,9 @@ jest.mock('../../store/persistence/musicCacheTables', () => {
     hydrateCachedSongs: jest.fn(() => ({})),
     hydrateCachedItems: jest.fn(() => ({})),
     hydrateDownloadQueue: jest.fn(() => []),
+    hydrateCachedSongsAsync: jest.fn(async () => ({})),
+    hydrateCachedItemsAsync: jest.fn(async () => ({})),
+    hydrateDownloadQueueAsync: jest.fn(async () => []),
     // Counters
     countCachedSongs: jest.fn(() => 0),
     countCachedItems: jest.fn(() => 0),

@@ -44,9 +44,11 @@ import {
   type DownloadQueueItem,
 } from '../store/musicCacheStore';
 import {
+  countCachedSongs,
   countSongRefs,
   insertCachedItemSong,
 } from '../store/persistence/musicCacheTables';
+import { logImageCache } from './imageCacheLogger';
 import { processingOverlayStore } from '../store/processingOverlayStore';
 import { playbackSettingsStore } from '../store/playbackSettingsStore';
 import { resolveEffectiveFormat } from '../utils/effectiveFormat';
@@ -226,6 +228,18 @@ export function teardownMusicCache(): void {
  * stalled downloads.
  */
 export async function deferredMusicCacheInit(): Promise<void> {
+  // Ensure the per-row tables are hydrated into the store BEFORE building the
+  // in-memory maps. This init runs from a `requestIdleCallback` on a different
+  // boot effect than the store hydration (`rehydrateAllStores`), so the idle
+  // callback can otherwise fire mid-hydration and build the maps from an empty
+  // `cachedSongs` — leaving every downloaded track shown as unavailable until
+  // the next launch. `hydrateFromDbAsync` is idempotent (re-reads the
+  // source-of-truth tables); the `hasHydrated` guard skips it once boot
+  // hydration has already run.
+  if (!musicCacheStore.getState().hasHydrated) {
+    await musicCacheStore.getState().hydrateFromDbAsync();
+  }
+
   // Call populateTrackMapsAsync directly (not ensureTrackMapsReady's
   // coalescing wrapper) so a reconciliation pass always refreshes the
   // in-memory maps from the latest store state — covering the case where
@@ -270,7 +284,7 @@ async function populateTrackMapsAsync(): Promise<void> {
   trackUriMap.clear();
   trackToItems.clear();
 
-  const { cachedSongs, cachedItems } = musicCacheStore.getState();
+  const { cachedSongs, cachedItems, hasHydrated } = musicCacheStore.getState();
 
   for (const song of Object.values(cachedSongs)) {
     const file = resolveSongFile(song);
@@ -288,8 +302,27 @@ async function populateTrackMapsAsync(): Promise<void> {
     }
   }
 
-  trackMapsReady = true;
-  flushTrackMapsReadyWaiters();
+  // Diagnostic (gated by the image-cache diagnostics flag). Compares rows in
+  // SQLite vs the hydrated store vs the map just built — a `dbSongs>0 mapSize=0`
+  // line is the signature of the empty-map-from-unhydrated-store regression.
+  logImageCache(
+    `musiccache trackmaps hydrated=${hasHydrated} `
+    + `dbSongs=${countCachedSongs()} storeSongs=${Object.keys(cachedSongs).length} `
+    + `mapSize=${trackUriMap.size}`,
+  );
+
+  // Only latch "ready" once the store is actually hydrated. The store hydrates
+  // on a SEPARATE async boot effect from the requestIdleCallback that runs
+  // deferredMusicCacheInit; if this ever runs mid-hydration it would build an
+  // empty `trackUriMap` and — without this guard — latch it, leaving every
+  // downloaded track shown as unavailable until the next launch (files on disk
+  // are intact; only the in-memory lookup is empty). Leaving it un-latched lets
+  // a later post-hydration call rebuild instead of short-circuiting in
+  // `ensureTrackMapsReady`.
+  if (hasHydrated) {
+    trackMapsReady = true;
+    flushTrackMapsReadyWaiters();
+  }
 
   // Run any starred-songs sync that was deferred because the favoritesStore
   // subscription fired before the maps were ready.
