@@ -11,8 +11,12 @@ class ExpoMoveToBackModule : Module() {
             // moveTaskToBack is an Activity/UI operation and must run on the
             // main thread; this Function is invoked on the JS thread. Dispatch
             // to the UI thread (fire-and-forget — the call itself is trivial).
-            val activity = appContext.currentActivity ?: return@Function
-            activity.runOnUiThread { activity.moveTaskToBack(true) }
+            // Safe-call (not `?: return@Function`) so the body's return shape
+            // stays Unit? — the bare labelled return doesn't satisfy the Expo
+            // `Function` DSL's expected return type and fails to compile.
+            appContext.currentActivity?.let { activity ->
+                activity.runOnUiThread { activity.moveTaskToBack(true) }
+            }
         }
     }
 }
