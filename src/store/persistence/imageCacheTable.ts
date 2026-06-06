@@ -282,6 +282,29 @@ export function getCachedImagesForCoverArt(
   }
 }
 
+/**
+ * Async twin of {@link getCachedImagesForCoverArt}. The single source of truth
+ * for "which variants does this cover have?" on the render + decision paths —
+ * `getAllAsync` keeps the SQLite work off the JS thread. A cover has ≤4 rows,
+ * so callers filter the small result in memory.
+ */
+export async function getCachedImagesForCoverArtAsync(
+  coverArtId: string,
+): Promise<CachedImageRow[]> {
+  const db = getDb();
+  if (db === null) return [];
+  try {
+    const rows = await db.getAllAsync<RawRow>(
+      `SELECT cover_art_id, size, ext, bytes, cached_at
+         FROM cached_images WHERE cover_art_id = ? ORDER BY size ASC;`,
+      [coverArtId],
+    );
+    return rows.map(mapRow);
+  } catch {
+    return [];
+  }
+}
+
 /** A single cached variant, keyed for the in-memory URI index. */
 export interface CachedImageIndexRow {
   coverArtId: string;

@@ -50,6 +50,7 @@ import {
   childToTrack,
   mapRepeatMode,
   mapState,
+  resolveTrackArtwork,
   stampQueueFormat,
 } from './playerHelpers';
 import { logImageCache } from './imageCacheLogger';
@@ -679,7 +680,8 @@ async function repushNowPlayingArtwork(): Promise<void> {
     if (!activeTrack?.id) return;
     const child = currentChildQueue.find((c) => c.id === activeTrack.id);
     if (!child) return;
-    const track = childToTrack(child);
+    const cachedArt = await resolveTrackArtwork(child);
+    const track = childToTrack(child, cachedArt);
     if (!track) return;
 
     logImageCache(
@@ -791,7 +793,7 @@ async function hydrateRestoredQueue(): Promise<void> {
     const originalIndex = playerStore.getState().currentTrackIndex ?? 0;
     const originalChild = currentChildQueue[originalIndex] ?? null;
 
-    const { rnTracks, filteredQueue } = buildPlayableQueue(currentChildQueue);
+    const { rnTracks, filteredQueue } = await buildPlayableQueue(currentChildQueue);
 
     if (rnTracks.length === 0) {
       // Nothing in the restored queue is playable right now (offline + no
@@ -973,7 +975,7 @@ export async function playTrack(
     await waitForTrackMapsReady();
     await ensureCoverArtAuth();
 
-    const { rnTracks, filteredQueue } = buildPlayableQueue(queue);
+    const { rnTracks, filteredQueue } = await buildPlayableQueue(queue);
 
     if (rnTracks.length === 0) {
       playbackToastStore.getState().fail(i18n.t('noOfflineTracksInQueue'));
@@ -1269,7 +1271,7 @@ export async function rebuildQueueForServerSwitch(): Promise<void> {
       // RNTP may not be ready yet; the reset below handles it.
     }
 
-    const { rnTracks, filteredQueue } = buildPlayableQueue(queue);
+    const { rnTracks, filteredQueue } = await buildPlayableQueue(queue);
     if (rnTracks.length === 0) {
       // Every track in the queue was filtered out (e.g. all offline-only
       // and we just switched to a server URL that doesn't have them).
@@ -1322,7 +1324,7 @@ export async function addToQueue(
   await waitForTrackMapsReady();
   await ensureCoverArtAuth();
 
-  const { rnTracks, filteredQueue: playable } = buildPlayableQueue(tracks);
+  const { rnTracks, filteredQueue: playable } = await buildPlayableQueue(tracks);
 
   if (rnTracks.length === 0) {
     playbackToastStore.getState().fail(i18n.t('noOfflineTracksInQueue'));
@@ -1367,7 +1369,7 @@ export async function playSongNext(song: Child): Promise<void> {
   await waitForTrackMapsReady();
   await ensureCoverArtAuth();
 
-  const { rnTracks, filteredQueue: playable } = buildPlayableQueue([song]);
+  const { rnTracks, filteredQueue: playable } = await buildPlayableQueue([song]);
   if (rnTracks.length === 0) {
     playbackToastStore.getState().fail(i18n.t('noOfflineTracksInQueue'));
     return;
@@ -1572,7 +1574,7 @@ export async function shuffleQueue(): Promise<void> {
     await TrackPlayer.pause();
 
     const shuffled = shuffleArray(currentChildQueue);
-    const { rnTracks, filteredQueue } = buildPlayableQueue(shuffled);
+    const { rnTracks, filteredQueue } = await buildPlayableQueue(shuffled);
 
     if (rnTracks.length === 0) {
       playbackToastStore.getState().fail(i18n.t('noOfflineTracksInQueue'));

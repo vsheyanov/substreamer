@@ -4,26 +4,19 @@
  * background cache download on a miss.
  *
  * Intended for non-Image consumers like `react-native-image-colors`.
+ * Resolution is asynchronous and DB-authoritative — no synchronous
+ * FS/SQLite — and the cache-update subscription re-resolves when a
+ * download lands.
  */
 
 import { useEffect, useState } from 'react';
 
 import {
   ensureCached,
-  getCachedImageUri,
+  resolveCachedImageUri,
+  subscribeImageCacheUpdate,
 } from '../services/imageCacheService';
 import { getCoverArtUrl } from '../services/subsonicService';
-
-/** Resolve the best available URI synchronously. */
-function resolveUri(
-  coverArtId: string | undefined,
-  size: number,
-): string | null {
-  if (!coverArtId) return null;
-  const cached = getCachedImageUri(coverArtId, size);
-  if (cached) return cached;
-  return getCoverArtUrl(coverArtId, size);
-}
 
 /**
  * Returns a URI (file:// or http(s)://) for the given cover art,
@@ -34,31 +27,43 @@ export function useCachedCoverArt(
   size: number,
 ): string | null {
   const [uri, setUri] = useState<string | null>(() =>
-    resolveUri(coverArtId, size),
+    coverArtId ? getCoverArtUrl(coverArtId, size) : null,
   );
 
-  // Re-resolve when deps change.
   useEffect(() => {
-    setUri(resolveUri(coverArtId, size));
-  }, [coverArtId, size]);
-
-  // On cache miss, download all sizes then update URI.
-  useEffect(() => {
-    if (!coverArtId) return;
+    if (!coverArtId) {
+      setUri(null);
+      return;
+    }
     let cancelled = false;
 
-    const cached = getCachedImageUri(coverArtId, size);
-    if (!cached) {
-      ensureCached(coverArtId)
-        .then(() => {
+    const resolve = () => {
+      resolveCachedImageUri(coverArtId, size)
+        .then((cached) => {
           if (cancelled) return;
-          const newCached = getCachedImageUri(coverArtId, size);
-          if (newCached) setUri(newCached);
+          if (cached) {
+            setUri(cached);
+          } else {
+            // Not cached: fall back to the remote URL and kick off caching.
+            setUri(getCoverArtUrl(coverArtId, size));
+            ensureCached(coverArtId).catch(() => {
+              /* non-critical: caching failure falls back to network URL */
+            });
+          }
         })
-        .catch(() => { /* non-critical: caching failure falls back to network URL */ });
-    }
+        .catch(() => {
+          if (!cancelled) setUri(getCoverArtUrl(coverArtId, size));
+        });
+    };
 
-    return () => { cancelled = true; };
+    resolve();
+    // Re-resolve when a download/resize lands for this id.
+    const unsub = subscribeImageCacheUpdate(coverArtId, resolve);
+
+    return () => {
+      cancelled = true;
+      unsub();
+    };
   }, [coverArtId, size]);
 
   return uri;

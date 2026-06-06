@@ -300,6 +300,10 @@ jest.mock('../../store/persistence/imageCacheTable', () => ({
     [...mockDbRows.values()]
       .filter((r) => r.coverArtId === id)
       .sort((a, b) => a.size - b.size),
+  getCachedImagesForCoverArtAsync: async (id: string) =>
+    [...mockDbRows.values()]
+      .filter((r) => r.coverArtId === id)
+      .sort((a, b) => a.size - b.size),
   getAllCachedImageRows: () =>
     [...mockDbRows.values()].map((r) => ({ coverArtId: r.coverArtId, size: r.size, ext: r.ext })),
   countCachedImages: jest.fn(() => mockDbRows.size),
@@ -314,8 +318,7 @@ import {
   IMAGE_SIZES,
   initImageCache,
   deferredImageCacheInit,
-  getCachedImageUri,
-  evictUriCacheEntry,
+  resolveCachedImageUri,
   deleteCachedVariant,
   ensureCached,
   getImageCacheStats,
@@ -328,7 +331,6 @@ import {
   prefetchCoverArt,
   __resetRetryStateForTest,
   __resetUriIndexForTest,
-  populateUriIndex,
   reportBadRemote,
   isRemoteFailed,
 } from '../imageCacheService';
@@ -464,46 +466,45 @@ describe('initImageCache — module-scope crash hardening', () => {
   });
 });
 
-describe('getCachedImageUri', () => {
-  it('returns null for empty coverArtId', () => {
-    expect(getCachedImageUri('', 300)).toBeNull();
+describe('resolveCachedImageUri (async, DB-authoritative)', () => {
+  it('returns null for empty coverArtId', async () => {
+    await expect(resolveCachedImageUri('', 300)).resolves.toBeNull();
   });
 
-  it('returns null when subdirectory does not exist', () => {
-    mockDirExistsMap.clear();
-    // All dirs default to true, explicitly set the subdir to false
-    const result = getCachedImageUri('nonexistent-dir-check', 300);
-    // Without matching file, returns null
-    expect(result).toBeNull();
+  it('returns null when the cover has no DB row', async () => {
+    await expect(resolveCachedImageUri('no-rows', 300)).resolves.toBeNull();
   });
 
-  it('returns file URI when cached file exists', () => {
-    // The mock File/Directory _name is built by joining .uri of parent + child string
-    // So we need to match the exact key pattern the mock produces.
-    // Just validate via the in-memory cache eviction path instead.
-    const id = 'cover-cached-check';
-    // First call populates the in-memory cache with null
-    getCachedImageUri(id, 300);
-    // Evict so it re-checks filesystem
-    evictUriCacheEntry(id, 300);
-    // Since we can't easily control the mock File.exists without knowing the exact _name,
-    // verify the function returns null for uncached files.
-    expect(getCachedImageUri(id, 300)).toBeNull();
+  it('returns the deterministic file URI built from a present DB row', async () => {
+    seedDbRow({ coverArtId: 'art-jpg', size: 300, ext: 'jpg' });
+    const uri = await resolveCachedImageUri('art-jpg', 300);
+    expect(uri).not.toBeNull();
+    expect(uri).toContain('art-jpg/300.jpg');
   });
 
-  it('uses in-memory cache on repeated calls', () => {
-    const result1 = getCachedImageUri('uncached-id', 150);
-    const result2 = getCachedImageUri('uncached-id', 150);
-    expect(result1).toBe(result2);
+  it('uses the row ext (png/webp), not a fixed extension', async () => {
+    seedDbRow({ coverArtId: 'art-png', size: 300, ext: 'png' });
+    seedDbRow({ coverArtId: 'art-webp', size: 600, ext: 'webp' });
+    expect(await resolveCachedImageUri('art-png', 300)).toContain('300.png');
+    expect(await resolveCachedImageUri('art-webp', 600)).toContain('600.webp');
   });
-});
 
-describe('evictUriCacheEntry', () => {
-  it('evicts a cached entry so next lookup hits filesystem', () => {
-    getCachedImageUri('evict-test', 300);
-    evictUriCacheEntry('evict-test', 300);
-    const result = getCachedImageUri('evict-test', 300);
-    expect(result).toBeNull();
+  it('returns null for a present cover but a missing size (no source-fallback)', async () => {
+    seedDbRow({ coverArtId: 'art-150-only', size: 150, ext: 'jpg' });
+    await expect(resolveCachedImageUri('art-150-only', 300)).resolves.toBeNull();
+  });
+
+  it('source-fallback resolves a smaller size from the 600 source row', async () => {
+    seedDbRow({ coverArtId: 'art-src', size: 600, ext: 'jpg' });
+    const uri = await resolveCachedImageUri('art-src', 50, { sourceFallback: true });
+    expect(uri).toContain('600.jpg');
+  });
+
+  it('source-fallback does not fall back for a 600 request (no self-fallback)', async () => {
+    seedDbRow({ coverArtId: 'art-no600', size: 50, ext: 'jpg' });
+    await expect(
+      resolveCachedImageUri('art-no600', 600, { sourceFallback: true }),
+    ).resolves.toBeNull();
   });
 });
 
@@ -636,118 +637,16 @@ describe('clearImageCache', () => {
 /*  Additional coverage tests                                          */
 /* ------------------------------------------------------------------ */
 
-describe('getCachedImageUri — file-found branch', () => {
-  it('returns the file URI when a .jpg variant exists on disk', () => {
-    const id = 'found-jpg';
-    // Mark the subdirectory as existing
-    mockDirExistsMap.set(subDirName(id), true);
-    // Mark the 300.jpg file as existing
-    mockFileExistsMap.set(fileMockName(id, '300.jpg'), true);
-
-    const uri = getCachedImageUri(id, 300);
-    expect(uri).not.toBeNull();
-    expect(uri).toContain('300.jpg');
-  });
-
-  it('returns the file URI for a .png variant when .jpg does not exist', () => {
-    const id = 'found-png';
-    mockDirExistsMap.set(subDirName(id), true);
-    // .jpg does NOT exist, but .png does
-    mockFileExistsMap.set(fileMockName(id, '300.png'), true);
-
-    const uri = getCachedImageUri(id, 300);
-    expect(uri).not.toBeNull();
-    expect(uri).toContain('300.png');
-  });
-
-  it('returns the file URI for a .webp variant', () => {
-    const id = 'found-webp';
-    mockDirExistsMap.set(subDirName(id), true);
-    mockFileExistsMap.set(fileMockName(id, '600.webp'), true);
-
-    const uri = getCachedImageUri(id, 600);
-    expect(uri).not.toBeNull();
-    expect(uri).toContain('600.webp');
-  });
-
-  it('caches a found URI in memory and returns the same value on subsequent calls', () => {
-    const id = 'mem-cache-hit';
-    mockDirExistsMap.set(subDirName(id), true);
-    mockFileExistsMap.set(fileMockName(id, '150.jpg'), true);
-
-    const first = getCachedImageUri(id, 150);
-    // Remove the file from mock – second call should still return cached value
-    mockFileExistsMap.delete(fileMockName(id, '150.jpg'));
-    const second = getCachedImageUri(id, 150);
-    expect(first).toBe(second);
-    expect(first).not.toBeNull();
-  });
-});
-
-describe('getCachedImageUri — index-backed hot path (no sync FS)', () => {
-  it('returns the indexed URI for a present row even when the file is absent from the FS mock', () => {
-    const id = 'indexed-present';
-    // DB row exists; deliberately leave the file ABSENT on the FS mock so that
-    // only the in-memory index — not a sync filesystem stat — can answer.
-    mockUpsertCachedImage({ coverArtId: id, size: 300, ext: 'jpg', bytes: 10, cachedAt: 1 });
-    populateUriIndex(); // build the index + flip uriIndexReady
-
-    const uri = getCachedImageUri(id, 300);
-    expect(uri).not.toBeNull();
-    expect(uri).toContain(`${id}/300.jpg`);
-  });
-
-  it('returns null for an un-indexed cover without consulting the filesystem', () => {
-    const id = 'not-indexed';
-    populateUriIndex(); // ready, but no row for this id
-    // File IS present on disk — a hot path that touched the FS would find it.
-    mockDirExistsMap.set(subDirName(id), true);
-    mockFileExistsMap.set(fileMockName(id, '300.jpg'), true);
-
-    expect(getCachedImageUri(id, 300)).toBeNull();
-  });
-
-  it('source-fallback resolves a smaller size from the indexed 600 source', () => {
-    const id = 'index-srcfallback';
-    mockUpsertCachedImage({ coverArtId: id, size: 600, ext: 'jpg', bytes: 10, cachedAt: 1 });
-    populateUriIndex();
-
-    const uri = getCachedImageUri(id, 50, { sourceFallback: true });
-    expect(uri).not.toBeNull();
-    expect(uri).toContain('600.jpg');
-  });
-});
-
 describe('reportBadRemote — a present local source always wins', () => {
-  it('does not flag a remote-failed id when the 600 source is indexed', () => {
-    const id = 'has-source';
-    mockUpsertCachedImage({ coverArtId: id, size: 600, ext: 'jpg', bytes: 10, cachedAt: 1 });
-    populateUriIndex();
-
-    reportBadRemote(id);
-    expect(isRemoteFailed(id)).toBe(false);
+  it('does not flag a remote-failed id when the 600 source row exists', async () => {
+    seedDbRow({ coverArtId: 'has-source', size: 600, ext: 'jpg' });
+    await reportBadRemote('has-source');
+    expect(isRemoteFailed('has-source')).toBe(false);
   });
 
-  it('flags a remote-failed id when no local source exists', () => {
-    const id = 'no-source';
-    populateUriIndex();
-
-    reportBadRemote(id);
-    expect(isRemoteFailed(id)).toBe(true);
-  });
-});
-
-describe('getCachedImageUri — directory-does-not-exist branch', () => {
-  it('returns null and caches null when subdirectory does not exist', () => {
-    const id = 'no-dir';
-    mockDirExistsMap.set(subDirName(id), false);
-
-    const result = getCachedImageUri(id, 300);
-    expect(result).toBeNull();
-
-    // Second call hits in-memory cache (no filesystem check)
-    const second = getCachedImageUri(id, 300);
-    expect(second).toBeNull();
+  it('flags a remote-failed id when no local source exists', async () => {
+    await reportBadRemote('no-source');
+    expect(isRemoteFailed('no-source')).toBe(true);
   });
 });
 
@@ -846,8 +745,9 @@ describe('generateResizedVariant — success and catch paths', () => {
     // Pre-set the 600px source as cached so downloadSourceImage is skipped
     mockDirExistsMap.set(subDirName(id), true);
     mockFileExistsMap.set(fileMockName(id, '600.jpg'), true);
-    // Evict in-memory cache so getCachedImageUri re-checks filesystem
-    for (const s of IMAGE_SIZES) evictUriCacheEntry(id, s);
+    // Source is "already cached" → a DB row for the 600 variant (the resolver
+    // is DB-authoritative, not FS-based).
+    seedDbRow({ coverArtId: id, size: 600 });
 
     await ensureCached(id);
 
@@ -862,7 +762,7 @@ describe('generateResizedVariant — success and catch paths', () => {
     // Pre-set 600px source as cached
     mockDirExistsMap.set(subDirName(id), true);
     mockFileExistsMap.set(fileMockName(id, '600.jpg'), true);
-    for (const s of IMAGE_SIZES) evictUriCacheEntry(id, s);
+    seedDbRow({ coverArtId: id, size: 600 });
 
     // Make every resize call fail — failures must be caught internally.
     mockResizeImageToFileAsync.mockRejectedValue(new Error('Resize crash'));
@@ -1053,7 +953,7 @@ describe('generateResizedVariant — dest.exists before rename (line 445)', () =
 
     mockDirExistsMap.set(subDirName(id), true);
     mockFileExistsMap.set(fileMockName(id, '600.jpg'), true);
-    for (const s of IMAGE_SIZES) evictUriCacheEntry(id, s);
+    seedDbRow({ coverArtId: id, size: 600 });
 
     let resizeCallCount = 0;
     mockResizeImageToFileAsync.mockImplementation(async (_src: string, targetUri: string) => {
@@ -1081,7 +981,7 @@ describe('generateResizedVariant — catch with existing tmp (line 454)', () => 
 
     mockDirExistsMap.set(subDirName(id), true);
     mockFileExistsMap.set(fileMockName(id, '600.jpg'), true);
-    for (const s of IMAGE_SIZES) evictUriCacheEntry(id, s);
+    seedDbRow({ coverArtId: id, size: 600 });
 
     mockResizeImageToFileAsync.mockImplementation(async () => {
       // Set tmp files as existing before the error so the catch block's
@@ -1103,7 +1003,6 @@ describe('generateResizedVariant — 3-failure circuit breaker purges row', () =
     mockDirExistsMap.set(subDirName(id), true);
     mockFileExistsMap.set(fileMockName(id, '600.jpg'), true);
     seedDbRow({ coverArtId: id, size: 600 });
-    for (const s of IMAGE_SIZES) evictUriCacheEntry(id, s);
 
     mockResizeImageToFileAsync.mockRejectedValue(new Error('persistent decode failure'));
 
@@ -1124,7 +1023,6 @@ describe('generateResizedVariant — 3-failure circuit breaker purges row', () =
     mockDirExistsMap.set(subDirName(id), true);
     mockFileExistsMap.set(fileMockName(id, '600.jpg'), true);
     seedDbRow({ coverArtId: id, size: 600 });
-    for (const s of IMAGE_SIZES) evictUriCacheEntry(id, s);
 
     // Fail twice then succeed — counter never reaches MAX_VARIANT_FAILURES
     // and is reset on success.
@@ -1569,7 +1467,9 @@ describe('sentinel cover-art IDs — sweep + guards', () => {
     setConnectivity({ isServerReachable: false });
     seedDbRow({ coverArtId: STARRED, size: 600 });
     seedDbRow({ coverArtId: VARIOUS, size: 600 });
-    seedDbRow({ coverArtId: 'al-realbum', size: 600 });
+    // Seed a non-source variant so the 600 source actually downloads (and 500s)
+    // — a 600 row would be treated as "source cached" and skip the fetch.
+    seedDbRow({ coverArtId: 'al-realbum', size: 50 });
     mockFetch.mockResolvedValue({
       ok: false,
       status: 500,
@@ -1603,7 +1503,7 @@ describe('sentinel cover-art IDs — sweep + guards', () => {
 
 describe('downloadSourceImage — connectivity-gated purge', () => {
   it('purges cache rows immediately when the server returns 404', async () => {
-    seedDbRow({ coverArtId: 'dead-album', size: 600 });
+    seedDbRow({ coverArtId: 'dead-album', size: 50 });
     mockFetch.mockResolvedValueOnce({
       ok: false,
       status: 404,
@@ -1614,14 +1514,14 @@ describe('downloadSourceImage — connectivity-gated purge', () => {
     await ensureCached('dead-album');
 
     expect(mockDeleteCachedImagesForCoverArt).toHaveBeenCalledWith('dead-album');
-    expect(mockDbRows.has(mockDbKey('dead-album', 600))).toBe(false);
+    expect(mockDbRows.has(mockDbKey('dead-album', 50))).toBe(false);
   });
 
   it('purges 404 even when connectivity store says server is unreachable', async () => {
     // 404 is unambiguous — we got a definitive server response that this
     // cover does not exist. The connectivity-store gate doesn't apply.
     setConnectivity({ isServerReachable: false });
-    seedDbRow({ coverArtId: 'dead-album', size: 600 });
+    seedDbRow({ coverArtId: 'dead-album', size: 50 });
     mockFetch.mockResolvedValueOnce({
       ok: false,
       status: 404,
@@ -1635,7 +1535,7 @@ describe('downloadSourceImage — connectivity-gated purge', () => {
   });
 
   it('purges immediately on a non-404 HTTP error when connectivity is healthy', async () => {
-    seedDbRow({ coverArtId: 'flaky-album', size: 600 });
+    seedDbRow({ coverArtId: 'flaky-album', size: 50 });
     mockFetch.mockResolvedValueOnce({
       ok: false,
       status: 500,
@@ -1646,12 +1546,12 @@ describe('downloadSourceImage — connectivity-gated purge', () => {
     await ensureCached('flaky-album');
 
     expect(mockDeleteCachedImagesForCoverArt).toHaveBeenCalledWith('flaky-album');
-    expect(mockDbRows.has(mockDbKey('flaky-album', 600))).toBe(false);
+    expect(mockDbRows.has(mockDbKey('flaky-album', 50))).toBe(false);
   });
 
   it('preserves the row on non-404 HTTP error when offline mode is on', async () => {
     setConnectivity({ offlineMode: true });
-    seedDbRow({ coverArtId: 'flaky-album', size: 600 });
+    seedDbRow({ coverArtId: 'flaky-album', size: 50 });
     mockFetch.mockResolvedValueOnce({
       ok: false,
       status: 503,
@@ -1662,12 +1562,12 @@ describe('downloadSourceImage — connectivity-gated purge', () => {
     await ensureCached('flaky-album');
 
     expect(mockDeleteCachedImagesForCoverArt).not.toHaveBeenCalledWith('flaky-album');
-    expect(mockDbRows.has(mockDbKey('flaky-album', 600))).toBe(true);
+    expect(mockDbRows.has(mockDbKey('flaky-album', 50))).toBe(true);
   });
 
   it('preserves the row on non-404 HTTP error when server is reported unreachable', async () => {
     setConnectivity({ isServerReachable: false });
-    seedDbRow({ coverArtId: 'flaky-album', size: 600 });
+    seedDbRow({ coverArtId: 'flaky-album', size: 50 });
     mockFetch.mockResolvedValueOnce({
       ok: false,
       status: 500,
@@ -1678,26 +1578,26 @@ describe('downloadSourceImage — connectivity-gated purge', () => {
     await ensureCached('flaky-album');
 
     expect(mockDeleteCachedImagesForCoverArt).not.toHaveBeenCalledWith('flaky-album');
-    expect(mockDbRows.has(mockDbKey('flaky-album', 600))).toBe(true);
+    expect(mockDbRows.has(mockDbKey('flaky-album', 50))).toBe(true);
   });
 
   it('preserves the row when fetch throws a transport error', async () => {
     // No Response received → server-reachability is unknown. The row
     // must be preserved regardless of what the connectivity store says
     // (the store may not yet have updated to reflect the outage).
-    seedDbRow({ coverArtId: 'unreachable-album', size: 600 });
+    seedDbRow({ coverArtId: 'unreachable-album', size: 50 });
     mockFetch.mockRejectedValueOnce(new Error('Network request failed'));
 
     await ensureCached('unreachable-album');
 
     expect(mockDeleteCachedImagesForCoverArt).not.toHaveBeenCalledWith('unreachable-album');
-    expect(mockDbRows.has(mockDbKey('unreachable-album', 600))).toBe(true);
+    expect(mockDbRows.has(mockDbKey('unreachable-album', 50))).toBe(true);
   });
 
   it('purges on file-IO error after a successful response when connectivity is healthy', async () => {
     // Server returned bytes; tmpFile.write throws (disk full / perms /
     // race). Server is responsive, so under the gate the row purges.
-    seedDbRow({ coverArtId: 'io-fail-album', size: 600 });
+    seedDbRow({ coverArtId: 'io-fail-album', size: 50 });
     mockFetch.mockResolvedValueOnce({
       ok: true,
       headers: { get: () => 'image/jpeg' },
@@ -1711,7 +1611,7 @@ describe('downloadSourceImage — connectivity-gated purge', () => {
 
   it('preserves on file-IO error when offline', async () => {
     setConnectivity({ offlineMode: true });
-    seedDbRow({ coverArtId: 'io-fail-album', size: 600 });
+    seedDbRow({ coverArtId: 'io-fail-album', size: 50 });
     mockFetch.mockResolvedValueOnce({
       ok: true,
       headers: { get: () => 'image/jpeg' },
@@ -1740,7 +1640,7 @@ describe('repairIncompleteImages — outcome counts', () => {
 
   it('counts a successful repair as repaired, not failed', async () => {
     // Seed a row so the cover appears incomplete (1 of 4).
-    seedDbRow({ coverArtId: 'album-ok', size: 600 });
+    seedDbRow({ coverArtId: 'album-ok', size: 50 });
 
     // Mock a successful fetch — the download pipeline upserts the 4
     // variants and the in-memory DB gets the full set.
@@ -1767,7 +1667,7 @@ describe('repairIncompleteImages — outcome counts', () => {
   });
 
   it('counts a 404 as removed, not failed', async () => {
-    seedDbRow({ coverArtId: 'album-404', size: 600 });
+    seedDbRow({ coverArtId: 'album-404', size: 50 });
     mockFetch.mockResolvedValue({
       ok: false,
       status: 404,
@@ -1787,7 +1687,7 @@ describe('repairIncompleteImages — outcome counts', () => {
     // Under the connectivity-gated model a 500 with healthy connectivity
     // purges immediately — no 3-strikes leniency. The row goes from
     // incomplete → gone, classified `removed` not `failed`.
-    seedDbRow({ coverArtId: 'album-flaky', size: 600 });
+    seedDbRow({ coverArtId: 'album-flaky', size: 50 });
     mockFetch.mockResolvedValue({
       ok: false,
       status: 500,
@@ -1807,7 +1707,7 @@ describe('repairIncompleteImages — outcome counts', () => {
     // Same scenario but with the connectivity gate closed — the row
     // must be preserved (failed), not purged (removed).
     setConnectivity({ isServerReachable: false });
-    seedDbRow({ coverArtId: 'album-offline-fail', size: 600 });
+    seedDbRow({ coverArtId: 'album-offline-fail', size: 50 });
     mockFetch.mockResolvedValue({
       ok: false,
       status: 500,
@@ -1824,7 +1724,7 @@ describe('repairIncompleteImages — outcome counts', () => {
   });
 
   it('counts a transport error as failed (no purge regardless of connectivity)', async () => {
-    seedDbRow({ coverArtId: 'album-transport-fail', size: 600 });
+    seedDbRow({ coverArtId: 'album-transport-fail', size: 50 });
     mockFetch.mockRejectedValue(new Error('Network request failed'));
 
     const outcome = await repairIncompleteImages();
@@ -1844,19 +1744,13 @@ describe('coverArtPathKey — FS-hostile coverArtId sanitisation', () => {
     return `file://file:///document/image-cache/${dirName}`;
   }
 
-  it('getCachedImageUri percent-encodes `:` in coverArtId when checking the filesystem', () => {
-    // Sanitised dir exists on disk under the percent-encoded name; raw dir
-    // does NOT. The lookup must resolve to the percent-encoded path.
-    const sanitised = 'dc-abc%3A1';
+  it('resolveCachedImageUri builds the percent-encoded path for `:` in coverArtId', async () => {
+    // SQL row keeps the canonical id; the resolved file path is percent-encoded.
     const raw = 'dc-abc:1';
-    mockDirExistsMap.set(subDirUri(sanitised), true);
-    mockFileExistsMap.set(fileMockName(sanitised, '600.jpg'), true);
-    mockFileSizeMap.set(fileMockName(sanitised, '600.jpg'), 1000);
+    seedDbRow({ coverArtId: raw, size: 600, ext: 'jpg' });
 
-    const uri = getCachedImageUri(raw, 600);
+    const uri = await resolveCachedImageUri(raw, 600);
     expect(uri).toMatch(/dc-abc%3A1\/600\.jpg$/);
-    // The raw-form dir was never asked for.
-    expect(mockDirExistsMap.has(subDirUri(raw))).toBe(false);
   });
 
   it('downloadAndCacheImage writes under the percent-encoded path', async () => {
@@ -1881,46 +1775,32 @@ describe('coverArtPathKey — FS-hostile coverArtId sanitisation', () => {
     expect(sanitisedPaths.length).toBeGreaterThan(0);
   });
 
-  it('distinct IDs `dc-abc:1` and `dc-abc_1` resolve to distinct paths', () => {
+  it('distinct IDs `dc-abc:1` and `dc-abc_1` resolve to distinct paths', async () => {
     // Regression: the old `:` → `_` mapping collapsed these to the same dir.
     // Percent-encoded `%3A` makes them injective.
-    const collidingClassic = 'dc-abc_1';
-    const collidingDisc = 'dc-abc:1';
-    const classicDir = 'dc-abc_1';
-    const discDir = 'dc-abc%3A1';
+    seedDbRow({ coverArtId: 'dc-abc_1', size: 300, ext: 'jpg' });
+    seedDbRow({ coverArtId: 'dc-abc:1', size: 300, ext: 'jpg' });
 
-    mockDirExistsMap.set(subDirUri(classicDir), true);
-    mockDirExistsMap.set(subDirUri(discDir), true);
-    mockFileExistsMap.set(fileMockName(classicDir, '300.jpg'), true);
-    mockFileSizeMap.set(fileMockName(classicDir, '300.jpg'), 500);
-    mockFileExistsMap.set(fileMockName(discDir, '300.jpg'), true);
-    mockFileSizeMap.set(fileMockName(discDir, '300.jpg'), 700);
-
-    const classicUri = getCachedImageUri(collidingClassic, 300);
-    const discUri = getCachedImageUri(collidingDisc, 300);
+    const classicUri = await resolveCachedImageUri('dc-abc_1', 300);
+    const discUri = await resolveCachedImageUri('dc-abc:1', 300);
     expect(classicUri).toMatch(/dc-abc_1\/300\.jpg$/);
     expect(discUri).toMatch(/dc-abc%3A1\/300\.jpg$/);
     expect(classicUri).not.toBe(discUri);
   });
 
-  it('percent-encodes `%` itself so the mapping is its own inverse', () => {
-    const raw = 'weird%id';
-    const sanitised = 'weird%25id';
-    mockDirExistsMap.set(subDirUri(sanitised), true);
-    mockFileExistsMap.set(fileMockName(sanitised, '150.jpg'), true);
-    mockFileSizeMap.set(fileMockName(sanitised, '150.jpg'), 250);
-
-    const uri = getCachedImageUri(raw, 150);
+  it('percent-encodes `%` itself so the mapping is its own inverse', async () => {
+    seedDbRow({ coverArtId: 'weird%id', size: 150, ext: 'jpg' });
+    const uri = await resolveCachedImageUri('weird%id', 150);
     expect(uri).toMatch(/weird%25id\/150\.jpg$/);
   });
 });
 
 /* ------------------------------------------------------------------ */
-/*  Reconcile: uriCache eviction on row deletion                       */
+/*  Reconcile: drops DB rows for missing files                         */
 /* ------------------------------------------------------------------ */
 
-describe('reconcileImageCache — uriCache eviction', () => {
-  it('Pass 2: evicts the URI cache entry when a DB row is deleted for a missing file', async () => {
+describe('reconcileImageCache — row drop on missing file', () => {
+  it('Pass 2: deletes the DB row when the file no longer exists on disk', async () => {
     // Seed a DB row for a cover whose file no longer exists on disk. The dir
     // is enumerated but empty so Pass 2 drops the row.
     seedDbRow({ coverArtId: 'gone-album', size: 600, ext: 'jpg' });
@@ -1930,17 +1810,10 @@ describe('reconcileImageCache — uriCache eviction', () => {
     });
     mockFileExistsMap.clear();
 
-    // Pre-warm the URI cache so we can prove it gets cleared.
-    const { getCachedImageUri: _get } = require('../imageCacheService');
-    // Prime: cache the null lookup (file doesn't exist).
-    _get('gone-album', 600);
-
     await reconcileImageCache();
 
-    // Row was deleted and the variant-level uriCache entry is evicted.
     expect(mockDeleteCachedImageVariant).toHaveBeenCalledWith('gone-album', 600);
-    // A follow-up lookup sees an empty cache and has to hit the FS
-    // (returns null because the file doesn't exist).
-    expect(_get('gone-album', 600)).toBeNull();
+    // The resolver (DB-authoritative) now returns null for the dropped row.
+    expect(await resolveCachedImageUri('gone-album', 600)).toBeNull();
   });
 });

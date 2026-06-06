@@ -155,7 +155,7 @@ jest.mock('../scrobbleService', () => ({
   sendNowPlaying: jest.fn(),
 }));
 
-jest.mock('../imageCacheService', () => ({ getCachedImageUri: jest.fn().mockReturnValue(null) }));
+jest.mock('../imageCacheService', () => ({ resolveCachedImageUri: jest.fn().mockResolvedValue(null) }));
 
 jest.mock('../musicCacheService', () => ({
   getLocalTrackUri: jest.fn().mockReturnValue(null),

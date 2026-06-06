@@ -111,7 +111,7 @@ jest.mock('../downloadSpeedTracker', () => ({
 jest.mock('../imageCacheService', () => ({
   ensureCached: jest.fn().mockResolvedValue(undefined),
   prefetchCoverArt: jest.fn(),
-  getCachedImageUri: jest.fn().mockReturnValue(null),
+  resolveCachedImageUri: jest.fn().mockResolvedValue(null),
 }));
 
 jest.mock('../subsonicService');

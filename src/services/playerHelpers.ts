@@ -16,7 +16,7 @@ import { playbackSettingsStore, type RepeatModeSetting } from '../store/playback
 import { type PlaybackStatus } from '../store/playerStore';
 import { resolveEffectiveFormat } from '../utils/effectiveFormat';
 import { coverArtIdForSong } from '../utils/coverArtId';
-import { getCachedImageUri } from './imageCacheService';
+import { resolveCachedImageUri } from './imageCacheService';
 import { logImageCache } from './imageCacheLogger';
 import { getLocalTrackUri } from './musicCacheService';
 import { getCoverArtUrl, getStreamUrl, type Child } from './subsonicService';
@@ -109,7 +109,10 @@ export function stampQueueFormat(child: Child): EffectiveFormat {
  * Callers must filter nulls out of the resulting array and treat an
  * all-null queue as "nothing playable" (toast + clearQueue).
  */
-export function childToTrack(child: Child): Track | null {
+export function childToTrack(
+  child: Child,
+  cachedArt?: string | null,
+): Track | null {
   const localUri = getLocalTrackUri(child.id);
   const offline = offlineModeStore.getState().offlineMode;
   if (!localUri && offline) return null;
@@ -133,7 +136,6 @@ export function childToTrack(child: Child): Track | null {
   // problem caused by Navidrome-style per-track coverArt variants.
   // `child.id` is always present, so the result is a defined string.
   const coverArtId = coverArtIdForSong(child) ?? child.id;
-  const cachedArt = getCachedImageUri(coverArtId, 600);
   const contentType = localUri ? mimeFromUri(localUri) : undefined;
   // In offline mode drop any server-only artwork so RNTP's lock-screen
   // artwork fetch can't hit the network either. (`getCoverArtUrl` also
@@ -160,14 +162,34 @@ export function childToTrack(child: Child): Track | null {
  * callers can translate desired indices onto the filtered queue by
  * looking up the original Child.
  */
-export function buildPlayableQueue(queue: readonly Child[]): {
+/**
+ * Resolve the local cached cover-art URI for a single track (async,
+ * DB-authoritative) using the same album-keyed id scheme as `childToTrack`.
+ * Returns null when not cached. Used by the lock-screen artwork re-push.
+ */
+export function resolveTrackArtwork(child: Child): Promise<string | null> {
+  const coverArtId = coverArtIdForSong(child) ?? child.id;
+  return resolveCachedImageUri(coverArtId, 600);
+}
+
+export async function buildPlayableQueue(queue: readonly Child[]): Promise<{
   rnTracks: Track[];
   filteredQueue: Child[];
-} {
+}> {
+  // Resolve local cover artwork up front (async, DB-authoritative — off the JS
+  // thread), deduped by album coverArtId so a 500-track album resolves one URI,
+  // not 500. Then build the tracks synchronously from the resolved map.
+  const ids = Array.from(new Set(queue.map((c) => coverArtIdForSong(c) ?? c.id)));
+  const artEntries = await Promise.all(
+    ids.map(async (id) => [id, await resolveCachedImageUri(id, 600)] as const),
+  );
+  const artMap = new Map<string, string | null>(artEntries);
+
   const rnTracks: Track[] = [];
   const filteredQueue: Child[] = [];
   for (const child of queue) {
-    const track = childToTrack(child);
+    const coverArtId = coverArtIdForSong(child) ?? child.id;
+    const track = childToTrack(child, artMap.get(coverArtId) ?? null);
     if (track) {
       rnTracks.push(track);
       filteredQueue.push(child);

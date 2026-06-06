@@ -42,10 +42,10 @@ import WaveformLogo from './WaveformLogo';
 import {
   buildRemoteImageUrl,
   ensureCached,
-  getCachedImageUri,
   isRemoteFailed,
   reportBadCache,
   reportBadRemote,
+  resolveCachedImageUri,
   subscribeImageCacheUpdate,
 } from '../services/imageCacheService';
 import { logImageCache } from '../services/imageCacheLogger';
@@ -127,18 +127,18 @@ export const CachedImage = memo(function CachedImage({
       : VARIOUS_ARTISTS_COVER_URI
     : rawFallbackUri;
 
-  // Re-render token. Bumped by the cache-update subscription on either
-  // a fresh on-disk variant OR a flip of failedRemoteIds for this id —
-  // both signals flow through the same channel.
-  const [, force] = useReducer((x: number) => x + 1, 0);
+  // Re-resolve token. Bumped by the cache-update subscription (a fresh on-disk
+  // variant OR a failedRemoteIds flip) and by onError, to re-run the async
+  // cover-art resolution below.
+  const [resolveToken, bumpResolve] = useReducer((x: number) => x + 1, 0);
 
-  // Per-mount flag: "I already tried the local URI and it failed."
-  // Clears when the cache-update fires (the service re-downloaded the
-  // file) or when the id/size changes (fresh attempt). The id/size
-  // reset happens during render via a previous-id compare so the
-  // render that introduced the new id picks LOCAL straight away — a
-  // useEffect-based reset would fire post-render and leave the first
-  // paint on the wrong branch.
+  // Locally-resolved cover URI, filled asynchronously from the DB (the single
+  // source of truth) — NO synchronous FS/SQLite on render. Null while resolving
+  // or when not cached; the REMOTE/PLACEHOLDER branches cover that window.
+  const [cachedUri, setCachedUri] = useState<string | null>(null);
+
+  // Per-mount flag: "I already tried the local URI and it failed." Reset on a
+  // cache-update or an id/size change (fresh attempt).
   const localErroredRef = useRef(false);
   const currentIdRef = useRef(coverArtId);
   const currentSizeRef = useRef(size);
@@ -146,17 +146,38 @@ export const CachedImage = memo(function CachedImage({
     currentIdRef.current = coverArtId;
     currentSizeRef.current = size;
     localErroredRef.current = false;
+    // Reset synchronously (React's "adjust state during render" pattern) so a
+    // recycled FlashList cell never shows the previous cover while the new one
+    // resolves.
+    setCachedUri(null);
   }
 
-  // Sync lookups on every render. The opt-in `sourceFallback` exposes
-  // the 600px source for smaller-size requests when the resized variant
-  // isn't on disk — handles servers that fail to resize but serve the
-  // source, and the brief gap before the local resize pipeline finishes.
-  const cachedUri = coverArtId
-    ? getCachedImageUri(coverArtId, size, { sourceFallback: true })
-    : null;
   const remoteFailed = coverArtId ? isRemoteFailed(coverArtId) : false;
   const offline = offlineModeStore((s) => s.offlineMode);
+
+  // Resolve the local cover URI asynchronously (DB-authoritative). On a miss,
+  // ask the service to cache it; the subscription below re-resolves when it
+  // lands. `sourceFallback` exposes the 600px source while smaller variants
+  // are still resizing — better than a placeholder.
+  useEffect(() => {
+    if (!coverArtId) {
+      setCachedUri(null);
+      return;
+    }
+    let cancelled = false;
+    resolveCachedImageUri(coverArtId, size, { sourceFallback: true })
+      .then((uri) => {
+        if (cancelled) return;
+        setCachedUri(uri);
+        if (!uri) ensureCached(coverArtId);
+      })
+      .catch(() => {
+        if (!cancelled) setCachedUri(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [coverArtId, size, resolveToken]);
 
   // Pick what to render: LOCAL > REMOTE > PLACEHOLDER.
   let renderUri: string | undefined;
@@ -172,19 +193,12 @@ export const CachedImage = memo(function CachedImage({
   }
   if (!renderUri && fallbackUri) renderUri = fallbackUri;
 
-  // Ask the service to cache this id. Idempotent (service-side dedup
-  // collapses bursts of concurrent calls for the same id).
-  useEffect(() => {
-    if (!coverArtId || cachedUri) return;
-    ensureCached(coverArtId);
-  }, [coverArtId, cachedUri]);
-
   // Subscribe — fires on file landed OR remote-failed flag flipped.
   useEffect(() => {
     if (!coverArtId) return;
     return subscribeImageCacheUpdate(coverArtId, () => {
       localErroredRef.current = false;
-      force();
+      bumpResolve();
     });
   }, [coverArtId]);
 
@@ -196,9 +210,9 @@ export const CachedImage = memo(function CachedImage({
       localErroredRef.current = true;
       reportBadCache(coverArtId, size);
     } else if (isRemote) {
-      reportBadRemote(coverArtId);
+      void reportBadRemote(coverArtId);
     }
-    force();
+    bumpResolve();
   }, [coverArtId, size, cachedUri, isRemote]);
 
   // Layout measurement for placeholder logo sizing.

@@ -136,7 +136,7 @@ jest.mock('../scrobbleService', () => ({
 }));
 
 jest.mock('../imageCacheService', () => ({
-  getCachedImageUri: jest.fn().mockReturnValue(null),
+  resolveCachedImageUri: jest.fn().mockResolvedValue(null),
 }));
 
 jest.mock('../musicCacheService', () => ({

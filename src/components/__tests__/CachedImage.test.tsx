@@ -26,7 +26,7 @@ jest.mock('../../store/persistence/kvStorage', () => require('../../store/persis
 
 import React from 'react';
 import { Image as RNImage } from 'react-native';
-import { act, render } from '@testing-library/react-native';
+import { act, render, waitFor } from '@testing-library/react-native';
 
 /* ------------------------------------------------------------------ */
 /*  Mocks                                                              */
@@ -42,7 +42,8 @@ const mockBuildRemoteImageUrl = jest.fn<string | null, [string, number]>();
 let cacheUpdateListener: (() => void) | null = null;
 
 jest.mock('../../services/imageCacheService', () => ({
-  getCachedImageUri: (id: string, size: number) => mockGetCachedImageUri(id, size),
+  resolveCachedImageUri: (id: string, size: number) =>
+    Promise.resolve(mockGetCachedImageUri(id, size)),
   ensureCached: (id: string) => mockEnsureCached(id),
   reportBadCache: (id: string, size: number) => mockReportBadCache(id, size),
   reportBadRemote: (id: string) => mockReportBadRemote(id),
@@ -141,10 +142,21 @@ function findImage(tree: ReturnType<typeof render>): { uri: string } | null {
   return null;
 }
 
-/** Fire the cache-update notification the service would normally send. */
-function fireCacheUpdate(): void {
-  act(() => {
+/** Flush the async cover-art resolution (promise microtasks + state apply). */
+async function flush(): Promise<void> {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+/** Fire the cache-update notification the service would normally send, then
+ *  flush the async re-resolution it triggers. */
+async function fireCacheUpdate(): Promise<void> {
+  await act(async () => {
     cacheUpdateListener?.();
+    await Promise.resolve();
+    await Promise.resolve();
   });
 }
 
@@ -153,15 +165,17 @@ function fireCacheUpdate(): void {
 /* ------------------------------------------------------------------ */
 
 describe('LOCAL state', () => {
-  it('renders the cached URI when getCachedImageUri returns a file://', () => {
+  it('renders the cached URI once the async resolver returns a file://', async () => {
     mockGetCachedImageUri.mockReturnValue('file:///cache/abc/150.jpg');
     const tree = render(<CachedImage coverArtId="abc" size={150} />);
+    await flush();
     expect(findImage(tree)?.uri).toBe('file:///cache/abc/150.jpg');
   });
 
-  it('does NOT call ensureCached when a cached file already exists', () => {
+  it('does NOT call ensureCached when a cached file already exists', async () => {
     mockGetCachedImageUri.mockReturnValue('file:///cache/abc/150.jpg');
     render(<CachedImage coverArtId="abc" size={150} />);
+    await flush();
     expect(mockEnsureCached).not.toHaveBeenCalled();
   });
 });
@@ -171,15 +185,17 @@ describe('LOCAL state', () => {
 /* ------------------------------------------------------------------ */
 
 describe('REMOTE state', () => {
-  it('renders the remote URL when no cached file exists', () => {
+  it('renders the remote URL when no cached file exists', async () => {
     mockGetCachedImageUri.mockReturnValue(null);
     const tree = render(<CachedImage coverArtId="abc" size={150} />);
+    await flush();
     expect(findImage(tree)?.uri).toContain('id=abc&size=150');
   });
 
-  it('calls ensureCached on mount when no cached file exists', () => {
+  it('calls ensureCached after resolving a miss', async () => {
     mockGetCachedImageUri.mockReturnValue(null);
     render(<CachedImage coverArtId="abc" size={150} />);
+    await flush();
     expect(mockEnsureCached).toHaveBeenCalledWith('abc');
   });
 });
@@ -189,33 +205,37 @@ describe('REMOTE state', () => {
 /* ------------------------------------------------------------------ */
 
 describe('PLACEHOLDER state', () => {
-  it('renders no Image layer when offline + no cache', () => {
+  it('renders no Image layer when offline + no cache', async () => {
     mockOfflineMode = true;
     mockGetCachedImageUri.mockReturnValue(null);
     const tree = render(<CachedImage coverArtId="abc" size={150} />);
+    await flush();
     expect(findImage(tree)).toBeNull();
     expect(tree.getByTestId('waveform-placeholder')).toBeTruthy();
   });
 
-  it('renders no Image layer when isRemoteFailed is true', () => {
+  it('renders no Image layer when isRemoteFailed is true', async () => {
     mockGetCachedImageUri.mockReturnValue(null);
     mockIsRemoteFailed.mockReturnValue(true);
     const tree = render(<CachedImage coverArtId="abc" size={150} />);
+    await flush();
     expect(findImage(tree)).toBeNull();
     expect(tree.getByTestId('waveform-placeholder')).toBeTruthy();
   });
 
-  it('renders only the placeholder when there is no coverArtId and no fallback', () => {
+  it('renders only the placeholder when there is no coverArtId and no fallback', async () => {
     const tree = render(<CachedImage coverArtId={undefined} size={150} />);
+    await flush();
     expect(findImage(tree)).toBeNull();
     expect(tree.getByTestId('waveform-placeholder')).toBeTruthy();
     expect(mockEnsureCached).not.toHaveBeenCalled();
   });
 
-  it('renders the fallbackUri when no coverArtId is provided', () => {
+  it('renders the fallbackUri when no coverArtId is provided', async () => {
     const tree = render(
       <CachedImage coverArtId={undefined} size={150} fallbackUri="https://ext.example/img.jpg" />,
     );
+    await flush();
     expect(findImage(tree)?.uri).toBe('https://ext.example/img.jpg');
   });
 });
@@ -225,27 +245,29 @@ describe('PLACEHOLDER state', () => {
 /* ------------------------------------------------------------------ */
 
 describe('cache-update recovery', () => {
-  it('switches from REMOTE to LOCAL when the cache file lands', () => {
+  it('switches from REMOTE to LOCAL when the cache file lands', async () => {
     mockGetCachedImageUri.mockReturnValue(null);
     const tree = render(<CachedImage coverArtId="abc" size={150} />);
+    await flush();
     expect(findImage(tree)?.uri).toContain('id=abc');
 
-    // Service downloaded the file; next sync lookup returns a file:// URI.
+    // Service downloaded the file; next resolve returns a file:// URI.
     mockGetCachedImageUri.mockReturnValue('file:///cache/abc/150.jpg');
-    fireCacheUpdate();
+    await fireCacheUpdate();
     expect(findImage(tree)?.uri).toBe('file:///cache/abc/150.jpg');
   });
 
-  it('switches from PLACEHOLDER (remote-failed) back to LOCAL on cache update', () => {
+  it('switches from PLACEHOLDER (remote-failed) back to LOCAL on cache update', async () => {
     mockGetCachedImageUri.mockReturnValue(null);
     mockIsRemoteFailed.mockReturnValue(true);
     const tree = render(<CachedImage coverArtId="abc" size={150} />);
+    await flush();
     expect(findImage(tree)).toBeNull();
 
     // Service recovered: cache landed AND the remote-failed flag is gone.
     mockIsRemoteFailed.mockReturnValue(false);
     mockGetCachedImageUri.mockReturnValue('file:///cache/abc/150.jpg');
-    fireCacheUpdate();
+    await fireCacheUpdate();
     expect(findImage(tree)?.uri).toBe('file:///cache/abc/150.jpg');
   });
 });
@@ -255,9 +277,10 @@ describe('cache-update recovery', () => {
 /* ------------------------------------------------------------------ */
 
 describe('decode errors', () => {
-  it('calls reportBadCache when a local URI fails to load, then falls through to REMOTE', () => {
+  it('calls reportBadCache when a local URI fails to load, then falls through to REMOTE', async () => {
     mockGetCachedImageUri.mockReturnValue('file:///cache/abc/150.jpg');
     const tree = render(<CachedImage coverArtId="abc" size={150} />);
+    await flush();
 
     // Simulate the Image layer failing to decode.
     const img = tree.UNSAFE_queryAllByType(RNImage)[0];
@@ -268,15 +291,16 @@ describe('decode errors', () => {
     expect(mockReportBadCache).toHaveBeenCalledWith('abc', 150);
     expect(mockReportBadRemote).not.toHaveBeenCalled();
 
-    // Next render — localErroredRef is set so we skip the cached URI and
-    // fall through to the remote URL.
+    // localErroredRef is set so we skip the cached URI and fall through to the
+    // remote URL.
     const after = findImage(tree);
     expect(after?.uri).toContain('id=abc');
   });
 
-  it('calls reportBadRemote when a remote URI fails to load', () => {
+  it('calls reportBadRemote when a remote URI fails to load', async () => {
     mockGetCachedImageUri.mockReturnValue(null);
     const tree = render(<CachedImage coverArtId="abc" size={150} />);
+    await flush();
     const img = tree.UNSAFE_queryAllByType(RNImage)[0];
     act(() => {
       img.props.onError();
@@ -285,17 +309,18 @@ describe('decode errors', () => {
     expect(mockReportBadCache).not.toHaveBeenCalled();
   });
 
-  it('clears the local-error flag when the cache-update fires', () => {
+  it('clears the local-error flag when the cache-update fires', async () => {
     mockGetCachedImageUri.mockReturnValue('file:///cache/abc/150.jpg');
     const tree = render(<CachedImage coverArtId="abc" size={150} />);
+    await flush();
     const img = tree.UNSAFE_queryAllByType(RNImage)[0];
     act(() => { img.props.onError(); });
 
     // After fallthrough — remote.
     expect(findImage(tree)?.uri).toContain('id=abc');
 
-    // Service redownloaded the file; cache lookup now returns it again.
-    fireCacheUpdate();
+    // Service redownloaded the file; resolve now returns it again.
+    await fireCacheUpdate();
     expect(findImage(tree)?.uri).toBe('file:///cache/abc/150.jpg');
   });
 });
@@ -305,15 +330,17 @@ describe('decode errors', () => {
 /* ------------------------------------------------------------------ */
 
 describe('sentinel cover-art ids', () => {
-  it('never contacts the image cache service for the starred-cover id', () => {
+  it('never contacts the image cache service for the starred-cover id', async () => {
     render(<CachedImage coverArtId="__STARRED__" size={150} />);
+    await flush();
     expect(mockEnsureCached).not.toHaveBeenCalled();
     expect(mockGetCachedImageUri).not.toHaveBeenCalled();
     expect(mockBuildRemoteImageUrl).not.toHaveBeenCalled();
   });
 
-  it('never contacts the image cache service for the various-artists id', () => {
+  it('never contacts the image cache service for the various-artists id', async () => {
     render(<CachedImage coverArtId="__VA__" size={150} />);
+    await flush();
     expect(mockEnsureCached).not.toHaveBeenCalled();
     expect(mockGetCachedImageUri).not.toHaveBeenCalled();
     expect(mockBuildRemoteImageUrl).not.toHaveBeenCalled();
@@ -325,18 +352,20 @@ describe('sentinel cover-art ids', () => {
 /* ------------------------------------------------------------------ */
 
 describe('id changes', () => {
-  it('resets local-error flag when the coverArtId changes mid-mount', () => {
+  it('resets local-error flag when the coverArtId changes mid-mount', async () => {
     mockGetCachedImageUri.mockImplementation((id) => `file:///cache/${id}/150.jpg`);
     const tree = render(<CachedImage coverArtId="abc" size={150} />);
+    await flush();
 
     // Error on abc — flag goes up, switches to remote on next render.
-    let img = tree.UNSAFE_queryAllByType(RNImage)[0];
+    const img = tree.UNSAFE_queryAllByType(RNImage)[0];
     act(() => { img.props.onError(); });
     expect(mockReportBadCache).toHaveBeenCalledWith('abc', 150);
 
-    // Re-render with a different id — flag resets, cached file for new
-    // id renders cleanly.
+    // Re-render with a different id — flag resets, cached file for the new
+    // id renders cleanly once it resolves.
     tree.rerender(<CachedImage coverArtId="xyz" size={150} />);
+    await flush();
     expect(findImage(tree)?.uri).toBe('file:///cache/xyz/150.jpg');
   });
 });
