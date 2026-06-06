@@ -37,12 +37,6 @@ import {
   View,
   type ViewStyle,
 } from 'react-native';
-import Animated, {
-  cancelAnimation,
-  useAnimatedStyle,
-  useSharedValue,
-  withTiming,
-} from 'react-native-reanimated';
 
 import WaveformLogo from './WaveformLogo';
 import {
@@ -65,8 +59,6 @@ import { absoluteFill } from '../utils/styles';
 /*  Constants                                                          */
 /* ------------------------------------------------------------------ */
 
-/** Duration of the placeholder-to-image crossfade for remote URLs. */
-const FADE_DURATION_MS = 300;
 /** Min size for the placeholder logo (dp). */
 const MIN_LOGO_SIZE = 16;
 /** Max size for the placeholder logo (dp). */
@@ -219,20 +211,6 @@ export const CachedImage = memo(function CachedImage({
     });
   }, []);
 
-  // Fade-in for remote URLs only. Local files and bundled fallbacks
-  // render at full opacity instantly — they're trusted sources.
-  const fadeAnim = useSharedValue(isRemote ? 0 : 1);
-  useEffect(() => {
-    cancelAnimation(fadeAnim);
-    fadeAnim.value = isRemote ? 0 : 1;
-  }, [isRemote, fadeAnim]);
-  const onLoad = useCallback(() => {
-    if (isRemote) {
-      fadeAnim.value = withTiming(1, { duration: FADE_DURATION_MS });
-    }
-  }, [isRemote, fadeAnim]);
-  const fadeStyle = useAnimatedStyle(() => ({ opacity: fadeAnim.value }));
-
   // One log line per state transition. Kept minimal so user logs are
   // scannable; the service has its own logs for downloads/retries.
   useEffect(() => {
@@ -272,17 +250,23 @@ export const CachedImage = memo(function CachedImage({
         />
       </View>
       {renderUri && (
-        <Animated.Image
+        <RNImage
           {...imageProps}
           source={{ uri: renderUri }}
-          style={[StyleSheet.absoluteFill, fadeStyle]}
-          onLoad={onLoad}
+          style={StyleSheet.absoluteFill as ImageStyle}
           onError={onError}
-          // We do our own crossfade via fadeStyle. Disabling Fresco's
-          // built-in fade shrinks the window in which a recycled view
-          // can deliver a decode-success callback to a released
-          // CloseableReference (the IllegalStateException trigger in
-          // PipelineDraweeController on Android).
+          // Plain RN Image at full opacity — NO reanimated opacity wrapper.
+          // A reanimated `useAnimatedStyle` opacity desyncs from the native
+          // view when a horizontal FlashList recycles the cell: the cover
+          // resolves to `local` (valid file URI) but the shared value stays
+          // stuck at the 0 it held during the earlier `remote` phase, so the
+          // image is permanently invisible behind the placeholder. See
+          // [[feedback_useeffect_entrance_animation_fragile]].
+          //
+          // fadeDuration={0} also disables Fresco's built-in fade, shrinking
+          // the window in which a recycled view delivers a decode-success
+          // callback to a released CloseableReference (the IllegalStateException
+          // in PipelineDraweeController on Android).
           fadeDuration={0}
         />
       )}
