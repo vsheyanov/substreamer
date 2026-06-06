@@ -68,13 +68,16 @@ const CacheRow = memo(function CacheRow({
     [colors.red, handleDelete, t],
   );
 
+  const refreshing = status === 'refreshing';
+  const refreshDisabled = offlineMode || refreshing;
+
   const leftActions: SwipeAction[] = useMemo(
-    () => offlineMode ? [] : [{ icon: 'refresh-outline' as const, color: colors.primary, label: t('refresh'), onPress: handleRefreshAction }],
-    [offlineMode, colors.primary, handleRefreshAction, t],
+    () => refreshDisabled ? [] : [{ icon: 'refresh-outline' as const, color: colors.primary, label: t('refresh'), onPress: handleRefreshAction }],
+    [refreshDisabled, colors.primary, handleRefreshAction, t],
   );
 
   return (
-    <SwipeableRow rightActions={rightActions} leftActions={leftActions} enableFullSwipeRight enableFullSwipeLeft={!offlineMode} rowGap={10} borderRadius={12}>
+    <SwipeableRow rightActions={rightActions} leftActions={leftActions} enableFullSwipeRight enableFullSwipeLeft={!refreshDisabled} rowGap={10} borderRadius={12}>
       <View style={styles.row}>
         <CachedImage
           coverArtId={entry.coverArtId}
@@ -92,16 +95,22 @@ const CacheRow = memo(function CacheRow({
           {!entry.complete && (
             <Pressable
               onPress={handleRefreshAction}
+              disabled={refreshDisabled}
               hitSlop={4}
               style={({ pressed }) => [
                 styles.repairBadge,
                 { backgroundColor: colors.red + '22', borderColor: colors.red },
+                refreshDisabled && styles.badgeDisabled,
                 pressed && styles.pressed,
               ]}
             >
-              <Ionicons name="warning" size={12} color={colors.red} />
+              {refreshing ? (
+                <ActivityIndicator size={12} color={colors.red} />
+              ) : (
+                <Ionicons name="warning" size={12} color={colors.red} />
+              )}
               <Text style={[styles.repairBadgeText, { color: colors.red }]}>
-                {t('incompleteTapToRepair')}
+                {refreshing ? t('downloadingEllipsis') : t('incompleteTapToRepair')}
               </Text>
             </Pressable>
           )}
@@ -117,11 +126,6 @@ const CacheRow = memo(function CacheRow({
               {f.fileName}
             </Text>
           ))}
-          {status === 'refreshing' && (
-            <Text style={[styles.statusText, { color: colors.primary }]}>
-              {t('downloadingEllipsis')}
-            </Text>
-          )}
           {status === 'success' && (
             <Text style={[styles.statusText, { color: colors.green }]}>
               {t('refreshedSuccessfully')}
@@ -138,7 +142,7 @@ const CacheRow = memo(function CacheRow({
             </Text>
           )}
         </View>
-        {status === 'refreshing' && (
+        {refreshing && entry.complete && (
           <ActivityIndicator size="small" color={colors.primary} style={styles.spinner} />
         )}
       </View>
@@ -215,6 +219,10 @@ export function ImageCacheBrowserScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [statusMap, setStatusMap] = useState<Map<string, RowStatus>>(new Map());
+  // Mirror of statusMap for synchronous reads in callbacks (re-entry guard,
+  // renderItem) without adding statusMap to their dep arrays.
+  const statusMapRef = useRef(statusMap);
+  statusMapRef.current = statusMap;
 
   // Derived list: status-filter switches are instant (no SQL, no re-render
   // of the whole service layer), text-filter runs against the narrowed set.
@@ -261,25 +269,28 @@ export function ImageCacheBrowserScreen() {
 
   const handleRefresh = useCallback(
     (coverArtId: string) => {
+      // Re-entry guard: ignore taps while this row is already refreshing so a
+      // user can't fire several overlapping downloads by rapid-tapping.
+      if (statusMapRef.current.get(coverArtId) === 'refreshing') return;
       setItemStatus(coverArtId, 'refreshing');
       refreshCoverArt(coverArtId, 'browser')
         .then(() => listCachedImages('all'))
         .then((result) => {
           // If the row purged itself during refresh (404, gated 5xx, or
-          // exhausted variant retries), it's gone from the list. Show the
-          // 'removed' badge for 3s by holding the list update until the
-          // badge has had its time on screen, then refresh the list.
+          // exhausted variant retries), it's gone from the list. Briefly show
+          // the 'removed' badge before dropping the row so the action reads as
+          // deliberate rather than a flicker.
           const stillPresent = result.some((e) => e.coverArtId === coverArtId);
           if (stillPresent) {
             setAllEntries(result);
             setItemStatus(coverArtId, 'success');
-            setTimeout(() => setItemStatus(coverArtId, 'idle'), 3000);
+            setTimeout(() => setItemStatus(coverArtId, 'idle'), 1500);
           } else {
             setItemStatus(coverArtId, 'removed');
             setTimeout(() => {
               setAllEntries(result);
               setItemStatus(coverArtId, 'idle');
-            }, 3000);
+            }, 1200);
           }
         })
         .catch((err: unknown) => {
@@ -322,9 +333,6 @@ export function ImageCacheBrowserScreen() {
     },
     [alert, t],
   );
-
-  const statusMapRef = useRef(statusMap);
-  statusMapRef.current = statusMap;
 
   const renderItem = useCallback(
     ({ item }: { item: CachedImageEntry }) => (
@@ -518,5 +526,8 @@ const styles = StyleSheet.create({
   repairBadgeText: {
     fontSize: 11,
     fontWeight: '500',
+  },
+  badgeDisabled: {
+    opacity: 0.5,
   },
 });

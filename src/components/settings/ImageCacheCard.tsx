@@ -1,6 +1,6 @@
 import Ionicons from '@react-native-vector-icons/ionicons/static';
 import { useRouter } from 'expo-router';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -11,10 +11,9 @@ import {
   cancelImageRefreshCycle,
   enqueueImageRefreshCycle,
   pauseImageQueue,
-  reconcileImageCache,
-  repairIncompleteImages,
   resumeImageQueue,
   retryFailedImages,
+  scanImageCache,
 } from '../../services/imageCacheService';
 import { imageDownloadQueueStore } from '../../store/imageDownloadQueueStore';
 import {
@@ -25,7 +24,6 @@ import { offlineModeStore } from '../../store/offlineModeStore';
 import { processingOverlayStore } from '../../store/processingOverlayStore';
 import { formatBytes } from '../../utils/formatters';
 import { minDelay } from '../../utils/stringHelpers';
-import { OfflineNotice } from './OfflineNotice';
 import { SettingsSectionTitle } from './SettingsSectionTitle';
 
 const IMAGE_CONCURRENT_OPTIONS: MaxConcurrentImageDownloads[] = [1, 3, 5, 10];
@@ -37,7 +35,6 @@ export function ImageCacheCard() {
   const insets = useSafeAreaInsets();
   const [sheetVisible, setSheetVisible] = useState(false);
   const [imageScanning, setImageScanning] = useState(false);
-  const [imageRepairing, setImageRepairing] = useState(false);
 
   const totalBytes = imageCacheStore((s) => s.totalBytes);
   const imageCount = imageCacheStore((s) => s.imageCount);
@@ -60,36 +57,22 @@ export function ImageCacheCard() {
     setSheetVisible(false);
   }, []);
 
-  const handleRefreshDownloadedCovers = useCallback(() => {
-    if (recacheActive) return;
-    void enqueueImageRefreshCycle('refresh-downloads');
-  }, [recacheActive]);
-
   const handleRefreshAllCovers = useCallback(() => {
-    if (recacheActive) return;
+    if (recacheActive || offlineMode) return;
     void enqueueImageRefreshCycle('refresh-all');
-  }, [recacheActive]);
+  }, [recacheActive, offlineMode]);
 
+  // Scan = reconcile FS↔SQL drift, repair incomplete covers, and remove the
+  // ones that still can't be completed (server-reachable only). Shared by the
+  // manual button (with overlay feedback) and the silent scan-on-open below.
   const handleImageScan = useCallback(async () => {
     if (imageScanning) return;
     setImageScanning(true);
-    const minShown = minDelay(1500);
-    try {
-      await reconcileImageCache('settings');
-    } finally {
-      await minShown;
-      setImageScanning(false);
-    }
-  }, [imageScanning]);
-
-  const handleImageRepair = useCallback(async () => {
-    if (offlineMode || imageRepairing) return;
-    setImageRepairing(true);
     processingOverlayStore.getState().show(t('repairingImages'));
     const minShown = minDelay(1500);
     try {
-      const outcome = await repairIncompleteImages('settings');
-      if (outcome.queued === 0 && outcome.removed === 0) {
+      const outcome = await scanImageCache('settings');
+      if (outcome.repaired === 0 && outcome.removed === 0 && outcome.failed === 0) {
         processingOverlayStore.getState().showSuccess(t('imageRepairNothingToDo'));
       } else if (outcome.failed > 0) {
         processingOverlayStore.getState().showSuccess(
@@ -108,9 +91,19 @@ export function ImageCacheCard() {
       processingOverlayStore.getState().showError(t('imageRepairFailed'));
     } finally {
       await minShown;
-      setImageRepairing(false);
+      setImageScanning(false);
     }
-  }, [offlineMode, imageRepairing, t]);
+  }, [imageScanning, t]);
+
+  // Silent scan when the user lands on this screen so the stats + cache are up
+  // to date without a tap. Runs once per mount; the manual button stays
+  // available for an explicit re-scan with visible feedback.
+  const didAutoScan = useRef(false);
+  useEffect(() => {
+    if (didAutoScan.current) return;
+    didAutoScan.current = true;
+    void scanImageCache('settings-open').catch(() => { /* best-effort */ });
+  }, []);
 
   return (
     <>
@@ -196,31 +189,22 @@ export function ImageCacheCard() {
               </Text>
             </Pressable>
             <Pressable
-              onPress={handleImageRepair}
-              disabled={offlineMode || imageRepairing || incompleteCount === 0}
+              onPress={handleRefreshAllCovers}
+              disabled={offlineMode || recacheActive}
               style={({ pressed }) => [
                 settingsStyles.actionRowButton,
                 { backgroundColor: colors.primary },
-                pressed && !offlineMode && !imageRepairing && incompleteCount > 0
-                  && settingsStyles.pressed,
-                (offlineMode || imageRepairing || incompleteCount === 0)
-                  && settingsStyles.disabled,
+                pressed && !offlineMode && !recacheActive && settingsStyles.pressed,
+                (offlineMode || recacheActive) && settingsStyles.disabled,
               ]}
             >
-              {imageRepairing ? (
-                <ActivityIndicator size="small" color="#fff" />
-              ) : (
-                <Ionicons name="build-outline" size={18} color="#fff" />
-              )}
+              <Ionicons name="refresh-outline" size={18} color="#fff" />
               <Text style={[settingsStyles.actionRowButtonText, { color: '#fff' }]}>
-                {t('repair')}
+                {t('refresh')}
               </Text>
             </Pressable>
           </View>
-          {offlineMode && incompleteCount > 0 && (
-            <OfflineNotice text={t('repairImagesOfflineNotice')} />
-          )}
-          {recacheActive ? (
+          {recacheActive && (
             <View style={styles.refreshCycleContainer}>
               <Text style={[styles.refreshCycleHeader, { color: colors.textPrimary }]}>
                 {recachePaused
@@ -285,47 +269,6 @@ export function ImageCacheCard() {
                 </Pressable>
               )}
             </View>
-          ) : (
-            <View style={styles.refreshIdleContainer}>
-              <Text style={[styles.refreshHeader, { color: colors.textPrimary }]}>
-                {t('refreshCoversHeader')}
-              </Text>
-              <View style={settingsStyles.actionRow}>
-                <Pressable
-                  onPress={handleRefreshDownloadedCovers}
-                  disabled={offlineMode}
-                  style={({ pressed }) => [
-                    settingsStyles.actionRowButton,
-                    { backgroundColor: colors.primary },
-                    pressed && !offlineMode && settingsStyles.pressed,
-                    offlineMode && settingsStyles.disabled,
-                  ]}
-                >
-                  <Ionicons name="refresh-outline" size={18} color="#fff" />
-                  <Text style={[settingsStyles.actionRowButtonText, { color: '#fff' }]}>
-                    {t('refreshCoversOfflineMusic')}
-                  </Text>
-                </Pressable>
-                <Pressable
-                  onPress={handleRefreshAllCovers}
-                  disabled={offlineMode}
-                  style={({ pressed }) => [
-                    settingsStyles.actionRowButton,
-                    { backgroundColor: colors.primary },
-                    pressed && !offlineMode && settingsStyles.pressed,
-                    offlineMode && settingsStyles.disabled,
-                  ]}
-                >
-                  <Ionicons name="refresh-outline" size={18} color="#fff" />
-                  <Text style={[settingsStyles.actionRowButtonText, { color: '#fff' }]}>
-                    {t('refreshCoversAll')}
-                  </Text>
-                </Pressable>
-              </View>
-              <Text style={[styles.refreshHint, { color: colors.textSecondary }]}>
-                {t('refreshCoversHint')}
-              </Text>
-            </View>
           )}
         </View>
       </View>
@@ -377,18 +320,6 @@ export function ImageCacheCard() {
 }
 
 const styles = StyleSheet.create({
-  refreshIdleContainer: {
-    marginTop: 12,
-    gap: 8,
-  },
-  refreshHeader: {
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  refreshHint: {
-    fontSize: 12,
-    lineHeight: 17,
-  },
   refreshCycleContainer: {
     marginTop: 12,
     gap: 8,
