@@ -462,9 +462,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  emptyContainer: {
-    flex: 1,
-  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -380,9 +380,6 @@ export function MetadataCacheBrowserScreen() {
 }
 
 const styles = StyleSheet.create({
-  emptyContainer: {
-    flex: 1,
-  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',

@@ -1,15 +1,6 @@
 import { calendarDaysBetween } from './dateKey';
 
 /**
- * Return the uppercase first letter of a name, or '#' for non-alpha characters.
- * Used by list views for alphabet scroller section indexing.
- */
-export function getFirstLetter(name: string): string {
-  const ch = name.charAt(0).toUpperCase();
-  return /[A-Z]/.test(ch) ? ch : '#';
-}
-
-/**
  * Common leading articles/prefixes stripped when computing artist initials.
  * Covers English, Spanish, French, German, Italian, and Portuguese articles.
  */

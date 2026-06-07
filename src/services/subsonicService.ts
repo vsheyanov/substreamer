@@ -192,11 +192,6 @@ export const VARIOUS_ARTISTS_BIO =
   'releases that feature songs from multiple artists.\n\n' +
   'Browse the albums below to discover what\'s in your collection.';
 
-/** Translated display name for Various Artists. Use for UI display only. */
-export function getVariousArtistsName(): string {
-  return i18n.t('variousArtists');
-}
-
 /** Translated bio for Various Artists. Use for UI display only. */
 export function getVariousArtistsBio(): string {
   return i18n.t('variousArtistsBio');

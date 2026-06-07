@@ -1,35 +1,4 @@
-import { getArtistInitials, getFirstLetter, minDelay, timeAgo } from '../stringHelpers';
-
-describe('getFirstLetter', () => {
-  it('returns uppercase letter for letter input', () => {
-    expect(getFirstLetter('A')).toBe('A');
-    expect(getFirstLetter('Z')).toBe('Z');
-  });
-
-  it('returns uppercase for lowercase input', () => {
-    expect(getFirstLetter('a')).toBe('A');
-    expect(getFirstLetter('hello')).toBe('H');
-  });
-
-  it('returns # for number', () => {
-    expect(getFirstLetter('1')).toBe('#');
-    expect(getFirstLetter('42')).toBe('#');
-  });
-
-  it('returns # for symbol', () => {
-    expect(getFirstLetter('!')).toBe('#');
-    expect(getFirstLetter('@')).toBe('#');
-  });
-
-  it('returns # for empty string', () => {
-    expect(getFirstLetter('')).toBe('#');
-  });
-
-  it('returns # for non-ASCII letters (regex matches A-Z only)', () => {
-    expect(getFirstLetter('É')).toBe('#');
-    expect(getFirstLetter('ñ')).toBe('#');
-  });
-});
+import { getArtistInitials, minDelay, timeAgo } from '../stringHelpers';
 
 describe('getArtistInitials', () => {
   it('returns first 2 letters for single-word name', () => {

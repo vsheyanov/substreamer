@@ -4,6 +4,7 @@ import Animated, { useSharedValue, useAnimatedProps, withDelay, withTiming } fro
 import Svg, { Rect as SvgRect } from 'react-native-svg';
 
 import { type ThemeColors } from '../constants/theme';
+import { hexWithAlpha } from '../utils/colors';
 
 const AnimatedRect = Animated.createAnimatedComponent(SvgRect);
 
@@ -109,10 +110,14 @@ export const MiniBarChart = memo(function MiniBarChart({
           {data.map((d, i) => {
             const barWidth = 8;
             const x = i * (barWidth + BAR_GAP);
-            const isHighlight = highlightIndex === i;
-            const barColor = isHighlight
-              ? (accentColor ?? colors.primary)
-              : (accentColor ?? colors.primary);
+            // Highlight a single bar (e.g. the latest day / peak hour) by
+            // dimming the others. When no highlight is requested every bar
+            // renders at full strength.
+            const base = accentColor ?? colors.primary;
+            const barColor =
+              highlightIndex == null || highlightIndex === i
+                ? base
+                : hexWithAlpha(base, 0.4);
             return (
               <AnimatedBar
                 key={i}

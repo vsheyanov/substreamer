@@ -187,9 +187,6 @@ const styles = StyleSheet.create({
     right: 0,
     zIndex: 1,
   },
-  emptyListContent: {
-    flexGrow: 1,
-  },
   row: {
     flexDirection: 'row',
     alignItems: 'center',

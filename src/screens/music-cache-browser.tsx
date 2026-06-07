@@ -650,9 +650,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  emptyListContent: {
-    flex: 1,
-  },
   rowContainer: {
     borderRadius: 12,
     overflow: 'hidden',
