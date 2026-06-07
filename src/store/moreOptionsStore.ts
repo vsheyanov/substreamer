@@ -56,7 +56,10 @@ export interface MoreOptionsState {
 // Resolvers waiting for the next close-complete signal. We hold them at
 // module scope (not inside the store) so the promise plumbing doesn't
 // trigger spurious re-renders for subscribers of the store object.
-const closeCompleteResolvers: Array<() => void> = [];
+const closeCompleteResolvers: Array<{
+  resolve: () => void;
+  timer: ReturnType<typeof setTimeout>;
+}> = [];
 
 // Belt-and-braces fallback for `hideAndAwait`. The BottomSheet's
 // scheduleCloseComplete chain (RAF + 100ms setTimeout) normally fires
@@ -81,22 +84,26 @@ export const moreOptionsStore = create<MoreOptionsState>()((set) => ({
   hideAndAwait: () => {
     set({ visible: false, entity: null, source: 'default' });
     return new Promise<void>((resolve) => {
-      closeCompleteResolvers.push(resolve);
-      setTimeout(() => {
-        const idx = closeCompleteResolvers.indexOf(resolve);
+      const timer = setTimeout(() => {
+        const idx = closeCompleteResolvers.findIndex((e) => e.resolve === resolve);
         if (idx >= 0) {
           closeCompleteResolvers.splice(idx, 1);
           resolve();
         }
       }, SAFETY_TIMEOUT_MS);
+      closeCompleteResolvers.push({ resolve, timer });
     });
   },
 
   _signalCloseComplete: () => {
-    // Drain every pending awaiter — they all wanted the same signal.
+    // Drain every pending awaiter — they all wanted the same signal — and clear
+    // each safety-net timer so it doesn't linger (held handle) after resolving.
     while (closeCompleteResolvers.length > 0) {
-      const resolve = closeCompleteResolvers.shift();
-      resolve?.();
+      const entry = closeCompleteResolvers.shift();
+      if (entry) {
+        clearTimeout(entry.timer);
+        entry.resolve();
+      }
     }
   },
 }));

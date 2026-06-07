@@ -66,8 +66,10 @@ export function initScrobbleService(): void {
   // Process any scrobbles persisted from a previous session.
   processScrobbles();
 
-  // Periodically retry pending scrobbles.
-  setInterval(processScrobbles, PROCESS_INTERVAL_MS);
+  // Periodically retry pending scrobbles. unref so this background interval
+  // never holds the process open (Node/jest); unref is absent in the RN runtime.
+  const retryInterval = setInterval(processScrobbles, PROCESS_INTERVAL_MS);
+  (retryInterval as { unref?: () => void }).unref?.();
 
   // U17 (facebook/react-native#56324): on Samsung Android the
   // setInterval above can stop firing while the app is backgrounded
