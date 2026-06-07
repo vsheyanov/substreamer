@@ -12,6 +12,12 @@ let appStateSubscription: NativeEventSubscription | null = null;
 function handleNetworkChange(state: NetInfoState): void {
   const { mode, homeSSIDs } = autoOfflineStore.getState();
 
+  // Ignore the transitional/indeterminate 'unknown' state. react-native-netinfo
+  // briefly reports it during network transitions; acting on it would flap the
+  // user offline (and wedge playback) on a momentary blip. A genuine 'none'
+  // still flows through as offline below.
+  if (state.type === 'unknown') return;
+
   if (mode === 'wifi-only') {
     const isOnline = state.type === 'wifi' || state.type === 'ethernet';
     offlineModeStore.getState().setOfflineMode(!isOnline);
