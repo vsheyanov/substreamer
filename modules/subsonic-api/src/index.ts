@@ -188,9 +188,26 @@ export default class SubsonicAPI {
 	}
 
 	async #requestJSON<T>(method: string, args?: Record<string, unknown>) {
-		return this.#request(method, args)
-			.then(async (res) => res.json())
-			.then(async (res) => res?.["subsonic-response"] as Promise<T>);
+		const res = await this.#request(method, args);
+		// Surface HTTP errors (proxy/CDN/auth error pages) as a status-bearing
+		// error instead of letting res.json() throw an opaque SyntaxError on a
+		// non-JSON body.
+		if (!res.ok) {
+			throw new Error(
+				`Subsonic request failed: ${res.status} ${res.statusText} (${method})`,
+			);
+		}
+		const body = await res.json();
+		const envelope = body?.["subsonic-response"];
+		// A missing envelope means the response wasn't a Subsonic response at all
+		// (a non-conformant proxy/error page that happened to be valid JSON).
+		// Throw rather than return `undefined` typed as T and corrupt callers.
+		if (envelope == null) {
+			throw new Error(
+				`Subsonic response missing 'subsonic-response' envelope (${method})`,
+			);
+		}
+		return envelope as T;
 	}
 
 	/**
