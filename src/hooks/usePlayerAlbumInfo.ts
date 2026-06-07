@@ -85,9 +85,13 @@ export function usePlayerAlbumInfo(
     if (!albumId) return;
     setRefreshing(true);
     const delay = minDelay();
-    // Drop the cached entry so the next fetch is a fresh hit.
-    const { [albumId]: _drop, ...rest } = albumInfoStore.getState().entries;
-    albumInfoStore.setState({ entries: rest });
+    // Drop the cached entry so the next fetch is a fresh hit. Functional updater
+    // so the delete is atomic against the latest state (a read-then-write could
+    // clobber a concurrent entries update).
+    albumInfoStore.setState((state) => {
+      const { [albumId]: _drop, ...rest } = state.entries;
+      return { entries: rest };
+    });
     fetchAttemptedRef.current = null;
     await albumInfoStore.getState().fetchAlbumInfo(
       albumId,
