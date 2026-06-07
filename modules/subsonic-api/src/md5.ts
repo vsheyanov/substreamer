@@ -1,7 +1,42 @@
 // https://stackoverflow.com/a/74041923 ported to TypeScript
 // just a short-ish md5 implementation since there's no built-in one in the browser
 // and all the libraries were a bit too much for this simple use case
-export const md5 = (input: string) => {
+
+/**
+ * Encode a JS string (UTF-16) to a byte string where each char is one UTF-8
+ * byte (0–255). MD5 must hash the UTF-8 BYTES of the input; the char-based
+ * implementation below reads `charCodeAt` (UTF-16 code units), so without this
+ * a non-ASCII password produces a different hash than the Subsonic server's
+ * (which hashes UTF-8), causing 401s on every authenticated request. ASCII is
+ * unchanged (each code unit < 0x80 maps to itself), so existing users are
+ * unaffected. Handles surrogate pairs (emoji, etc.).
+ */
+const toUtf8ByteString = (str: string): string => {
+    let out = '';
+    for (let i = 0; i < str.length; i++) {
+        const c = str.charCodeAt(i);
+        if (c < 0x80) {
+            out += String.fromCharCode(c);
+        } else if (c < 0x800) {
+            out += String.fromCharCode(0xc0 | (c >> 6), 0x80 | (c & 0x3f));
+        } else if (c >= 0xd800 && c <= 0xdbff && i + 1 < str.length) {
+            const c2 = str.charCodeAt(++i);
+            const cp = 0x10000 + ((c & 0x3ff) << 10) + (c2 & 0x3ff);
+            out += String.fromCharCode(
+                0xf0 | (cp >> 18),
+                0x80 | ((cp >> 12) & 0x3f),
+                0x80 | ((cp >> 6) & 0x3f),
+                0x80 | (cp & 0x3f),
+            );
+        } else {
+            out += String.fromCharCode(0xe0 | (c >> 12), 0x80 | ((c >> 6) & 0x3f), 0x80 | (c & 0x3f));
+        }
+    }
+    return out;
+};
+
+export const md5 = (rawInput: string) => {
+    const input = toUtf8ByteString(rawInput);
     const hc = '0123456789abcdef';
     const rh = (n: number) => {let j: any,s='';for(j=0;j<=3;j++) s+=hc.charAt((n>>(j*8+4))&0x0F)+hc.charAt((n>>(j*8))&0x0F);return s;}
     const ad = (x: number, y: number) => {const l=(x&0xFFFF)+(y&0xFFFF);const m=(x>>16)+(y>>16)+(l>>16);return (m<<16)|(l&0xFFFF);}
