@@ -122,12 +122,14 @@ export function createDebouncedPersistStorage<S>(
       // Zustand store is already updated, so returning immediately is safe.
       pending.set(name, value);
       cancelTimer(name);
-      timers.set(
-        name,
-        setTimeout(() => {
-          void flushKey(name);
-        }, debounceMs),
-      );
+      const timer = setTimeout(() => {
+        void flushKey(name);
+      }, debounceMs);
+      // This best-effort flush must never hold the process open: under Node
+      // (jest) an un-unref'd timer leaves the worker hanging at exit. `unref`
+      // is Node-only and absent in the RN runtime, so guard the call.
+      (timer as { unref?: () => void }).unref?.();
+      timers.set(name, timer);
     },
 
     async removeItem(name: string): Promise<void> {
