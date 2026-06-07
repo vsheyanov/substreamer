@@ -31,6 +31,7 @@ LogBox.ignoreLogs([
 
 import { AddToPlaylistSheet } from '../components/AddToPlaylistSheet';
 import { BookmarkNameSheet } from '../components/BookmarkNameSheet';
+import { RootErrorBoundary } from '../components/RootErrorBoundary';
 import { ThemedAlertHost } from '../components/ThemedAlertHost';
 import { DARK_MIX, GRADIENT_LOCATIONS, GRADIENT_MIX_CURVE, GradientBackground, LIGHT_MIX } from '../components/GradientBackground';
 import { mixHexColors } from '../utils/colors';
@@ -620,6 +621,7 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.background }}>
       <I18nextProvider i18n={i18n}>
       <ThemeProvider value={navigationTheme}>
+      <RootErrorBoundary colors={colors}>
       <StatusBar style={theme === 'dark' ? 'light' : 'dark'} />
       <SplitLayout
         animate={animatePanel}
@@ -832,6 +834,7 @@ export default function RootLayout() {
       {splashVisible && (
         <AnimatedSplashScreen onFinish={handleSplashFinish} />
       )}
+      </RootErrorBoundary>
       </ThemeProvider>
       </I18nextProvider>
     </GestureHandlerRootView>
