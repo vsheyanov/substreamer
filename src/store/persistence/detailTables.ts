@@ -203,39 +203,61 @@ export function upsertSongsForAlbum(albumId: string, songs: Child[]): void {
  * `songIndexStore.upsertSongsForAlbum` (fire-and-forget after the in-memory
  * patch). Atomic, like the sync version.
  */
+/**
+ * Serialize song_index async transactions. expo-sqlite's `withTransactionAsync`
+ * is NOT exclusive — concurrent calls on the shared connection interleave
+ * BEGIN/COMMIT and can torn-commit or silently drop a batch. During a library
+ * sync the WALK_CONCURRENCY=4 album walk fires these writers concurrently, so a
+ * promise-chain mutex keeps at most one song_index transaction in flight. A
+ * thrown task can't break the chain (the `.then(undefined-undefined)` always
+ * settles it).
+ */
+let songIndexWriteChain: Promise<unknown> = Promise.resolve();
+function serializeSongIndexWrite<T>(task: () => Promise<T>): Promise<T> {
+  const run = songIndexWriteChain.then(task, task);
+  songIndexWriteChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 export async function upsertSongsForAlbumAsync(albumId: string, songs: Child[]): Promise<void> {
   const db = getDb();
   if (db === null) return;
   try {
-    await db.withTransactionAsync(async () => {
-      await db.runAsync('DELETE FROM song_index WHERE albumId = ?;', [albumId]);
-      for (const song of songs) {
-        if (!song.id) continue;
-        // eslint-disable-next-line no-await-in-loop
-        await db.runAsync(
-          `INSERT OR REPLACE INTO song_index
-             (id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc, raw_json)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
-          [
-            song.id,
-            albumId,
-            song.title ?? null,
-            song.artist ?? null,
-            song.album ?? null,
-            song.duration ?? null,
-            song.coverArt ?? null,
-            song.userRating ?? null,
-            song.starred ? 1 : 0,
-            song.year ?? null,
-            song.track ?? null,
-            song.discNumber ?? null,
-            JSON.stringify(song),
-          ],
-        );
-      }
-    });
-  } catch {
-    /* dropped */
+    await serializeSongIndexWrite(() =>
+      db.withTransactionAsync(async () => {
+        await db.runAsync('DELETE FROM song_index WHERE albumId = ?;', [albumId]);
+        for (const song of songs) {
+          if (!song.id) continue;
+          // eslint-disable-next-line no-await-in-loop
+          await db.runAsync(
+            `INSERT OR REPLACE INTO song_index
+               (id, albumId, title, artist, album, duration, coverArt, userRating, starred, year, track, disc, raw_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+            [
+              song.id,
+              albumId,
+              song.title ?? null,
+              song.artist ?? null,
+              song.album ?? null,
+              song.duration ?? null,
+              song.coverArt ?? null,
+              song.userRating ?? null,
+              song.starred ? 1 : 0,
+              song.year ?? null,
+              song.track ?? null,
+              song.discNumber ?? null,
+              JSON.stringify(song),
+            ],
+          );
+        }
+      }),
+    );
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[detailTables] upsertSongsForAlbumAsync failed albumId=' + albumId, e);
   }
 }
 
@@ -260,14 +282,17 @@ export async function deleteSongsForAlbumsAsync(albumIds: readonly string[]): Pr
   const db = getDb();
   if (db === null || albumIds.length === 0) return;
   try {
-    await db.withTransactionAsync(async () => {
-      for (const id of albumIds) {
-        // eslint-disable-next-line no-await-in-loop
-        await db.runAsync('DELETE FROM song_index WHERE albumId = ?;', [id]);
-      }
-    });
-  } catch {
-    /* dropped */
+    await serializeSongIndexWrite(() =>
+      db.withTransactionAsync(async () => {
+        for (const id of albumIds) {
+          // eslint-disable-next-line no-await-in-loop
+          await db.runAsync('DELETE FROM song_index WHERE albumId = ?;', [id]);
+        }
+      }),
+    );
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn('[detailTables] deleteSongsForAlbumsAsync failed', e);
   }
 }
 
