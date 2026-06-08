@@ -14,6 +14,16 @@ public class ExpoGzipModule: Module {
                 throw GzipError.invalidUri
             }
 
+            // Parity with Android (parentFile?.mkdirs()): ensure the destination
+            // directory exists before writing — Data.write(to:) does NOT create
+            // intermediate directories and fails outright if the parent is
+            // missing. withIntermediateDirectories:true is a no-op when it
+            // already exists.
+            try FileManager.default.createDirectory(
+                at: destUrl.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+
             let compressed = try Self.gzipCompress(inputData)
             try compressed.write(to: destUrl)
 
@@ -101,6 +111,9 @@ public class ExpoGzipModule: Module {
         var decompressed = Data(capacity: data.count * 4)
         let chunkSize = 65_536
         var buffer = Data(count: chunkSize)
+        // Tracks the status of the last inflate() call so we can verify the
+        // stream actually completed (Z_STREAM_END) after the loop drains.
+        var finalResult: Int32 = Z_OK
 
         try data.withUnsafeBytes { inPtr in
             // U6 hygiene: replace force-unwrap with throw. Outer closure can throw,
@@ -132,12 +145,24 @@ public class ExpoGzipModule: Module {
 
                 let produced = chunkSize - Int(stream.avail_out)
                 decompressed.append(buffer.prefix(produced))
+                finalResult = result
 
                 if result == Z_STREAM_END { break }
             } while stream.avail_out == 0
         }
 
         inflateEnd(&stream)
+
+        // A well-formed gzip member terminates with Z_STREAM_END. If the loop
+        // exhausted all available input without reaching it, the file is
+        // truncated/corrupt and `decompressed` holds only a partial payload —
+        // throw instead of silently returning incomplete data. This matches
+        // Android's GZIPInputStream, which raises EOFException on a truncated
+        // member rather than returning what it managed to read.
+        guard finalResult == Z_STREAM_END else {
+            throw GzipError.decompressionFailed(Z_DATA_ERROR)
+        }
+
         return decompressed
     }
 }
