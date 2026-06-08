@@ -1513,14 +1513,18 @@ export function deleteCachedItem(itemId: string): void {
     }
   }
 
-  // Delete files for orphaned songs. Use the snapshotted metadata to
-  // resolve paths since the store has already removed them.
+  // Delete files for orphaned songs OFF-THREAD. Use the snapshotted metadata
+  // to resolve paths since the store has already removed them. No sync
+  // `.exists` gate — deleteFileAsync no-ops on a missing path (mirrors the
+  // reconcile path's off-thread deletes). The store mutations above already
+  // ran synchronously, so the download-status UI updates the instant the user
+  // taps; only the unlinks are deferred.
+  const deletions: Promise<unknown>[] = [];
   for (const song of affectedSongs) {
     if (!orphanSet.has(song.id)) continue;
-    const file = resolveSongFile(song);
-    if (file.exists) {
-      try { file.delete(); } catch { /* best-effort */ }
-    }
+    deletions.push(
+      deleteFileAsync(resolveSongFile(song).uri).catch(() => { /* best-effort */ }),
+    );
   }
 
   // Best-effort cleanup of empty album directories. Only attempt for album
@@ -1539,13 +1543,18 @@ export function deleteCachedItem(itemId: string): void {
       (s) => (s.albumId || UNKNOWN_ALBUM_ID) === albumId,
     );
     if (anyReference) continue;
-    const albumDir = new Directory(albumsRoot, albumId);
-    if (albumDir.exists) {
-      try { albumDir.delete(); } catch { /* best-effort */ }
-    }
+    // deleteDirectoryAsync is recursive + cross-platform, matching the old
+    // sync `Directory.delete()`; it no-ops if the dir is already gone.
+    deletions.push(
+      deleteDirectoryAsync(new Directory(albumsRoot, albumId).uri).catch(() => {
+        /* best-effort */
+      }),
+    );
   }
 
-  resumeIfSpaceAvailable();
+  // Re-check the storage limit only AFTER the unlinks have freed space, so a
+  // download paused for low space resumes — same ordering the sync deletes had.
+  void Promise.all(deletions).then(() => resumeIfSpaceAvailable());
 }
 
 /**
@@ -1623,15 +1632,13 @@ export function demoteAlbumToPartial(
     trackUriMap.delete(songId);
   }
 
-  // Delete orphan files (best-effort).
-  for (const song of orphanSnapshot) {
-    const file = resolveSongFile(song);
-    if (file.exists) {
-      try { file.delete(); } catch { /* best-effort */ }
-    }
-  }
-
-  resumeIfSpaceAvailable();
+  // Delete orphan files OFF-THREAD (best-effort), then re-check the storage
+  // limit once the unlinks have freed space — same ordering as the prior
+  // sync deletes → resume.
+  const deletions = orphanSnapshot.map((song) =>
+    deleteFileAsync(resolveSongFile(song).uri).catch(() => { /* best-effort */ }),
+  );
+  void Promise.all(deletions).then(() => resumeIfSpaceAvailable());
   return { demoted: true, removed: false };
 }
 
@@ -1659,10 +1666,7 @@ export function removeCachedPlaylistTrack(itemId: string, trackIndex: number): v
   if (orphanedSongId && song) {
     trackToItems.delete(orphanedSongId);
     trackUriMap.delete(orphanedSongId);
-    const file = resolveSongFile(song);
-    if (file.exists) {
-      try { file.delete(); } catch { /* best-effort */ }
-    }
+    void deleteFileAsync(resolveSongFile(song).uri).catch(() => { /* best-effort */ });
   }
 }
 
@@ -1694,10 +1698,7 @@ export function removeCachedAlbumSong(albumItemId: string, songId: string): bool
   if (orphanedSongId && song) {
     trackToItems.delete(orphanedSongId);
     trackUriMap.delete(orphanedSongId);
-    const file = resolveSongFile(song);
-    if (file.exists) {
-      try { file.delete(); } catch { /* best-effort */ }
-    }
+    void deleteFileAsync(resolveSongFile(song).uri).catch(() => { /* best-effort */ });
   }
 
   resumeIfSpaceAvailable();
@@ -1748,10 +1749,7 @@ export function syncCachedPlaylistTracks(
     if (orphanedSongId && song) {
       trackToItems.delete(orphanedSongId);
       trackUriMap.delete(orphanedSongId);
-      const file = resolveSongFile(song);
-      if (file.exists) {
-        try { file.delete(); } catch { /* best-effort */ }
-      }
+      void deleteFileAsync(resolveSongFile(song).uri).catch(() => { /* best-effort */ });
     }
   }
 

@@ -1278,24 +1278,30 @@ describe('deleteCachedItem', () => {
     expect(musicCacheStore.getState().cachedItems['album-1']).toBeUndefined();
   });
 
-  it('deletes orphan song files on disk', () => {
-    mockFileExists = true;
+  it('deletes orphan song files on disk (off-thread)', () => {
     seedSong(makeCachedSong('s1'));
     seedItem('album-1', { type: 'album', songIds: ['s1'] });
     deleteCachedItem('album-1');
-    // Orphan file deletion invoked.
-    expect(fileDeletes.some((u) => u.includes('s1'))).toBe(true);
+    // Orphan file deletion invoked via the off-thread helper.
+    expect(fileDeletesAsync.some((u) => u.includes('s1'))).toBe(true);
+  });
+
+  it('removes the album directory when no song still references it', () => {
+    seedSong(makeCachedSong('s1', { albumId: 'distinct-alb' }));
+    seedItem('album-1', { type: 'album', songIds: ['s1'] });
+    deleteCachedItem('album-1');
+    // No surviving reference to 'distinct-alb' → its dir is reaped off-thread.
+    expect(dirDeletesAsync.some((u) => u.includes('distinct-alb'))).toBe(true);
   });
 
   it('preserves files for songs still referenced by other items', () => {
-    mockFileExists = true;
     seedSong(makeCachedSong('s1'));
     seedItem('album-1', { type: 'album', songIds: ['s1'] });
     seedItem('pl-1', { type: 'playlist', songIds: ['s1'] });
 
     deleteCachedItem('pl-1');
     // Song still referenced by album-1 → file must not be deleted.
-    expect(fileDeletes.some((u) => u.includes('s1'))).toBe(false);
+    expect(fileDeletesAsync.some((u) => u.includes('s1'))).toBe(false);
     expect(musicCacheStore.getState().cachedSongs['s1']).toBeDefined();
   });
 
@@ -1400,9 +1406,9 @@ describe('demoteAlbumToPartial', () => {
     // the album's edge set.
     expect(album.songIds.sort()).toEqual(['s1', 's2']);
     // s3's file should have been deleted.
-    expect(fileDeletes.some((u) => u.includes('s3'))).toBe(true);
-    expect(fileDeletes.some((u) => u.includes('s1'))).toBe(false);
-    expect(fileDeletes.some((u) => u.includes('s2'))).toBe(false);
+    expect(fileDeletesAsync.some((u) => u.includes('s3'))).toBe(true);
+    expect(fileDeletesAsync.some((u) => u.includes('s1'))).toBe(false);
+    expect(fileDeletesAsync.some((u) => u.includes('s2'))).toBe(false);
   });
 
   it('no-op guard when album item has no orphans (defensive: survivors fully cover it)', () => {
@@ -1447,7 +1453,7 @@ describe('removeCachedPlaylistTrack', () => {
 
     const item = musicCacheStore.getState().cachedItems['pl-1'];
     expect(item.songIds).toEqual(['s2']);
-    expect(fileDeletes.some((u) => u.includes('s1'))).toBe(true);
+    expect(fileDeletesAsync.some((u) => u.includes('s1'))).toBe(true);
   });
 
   it('preserves file when song is still referenced elsewhere', () => {
@@ -1458,7 +1464,7 @@ describe('removeCachedPlaylistTrack', () => {
 
     removeCachedPlaylistTrack('pl-1', 0);
     // File NOT deleted since album-1 still references it.
-    expect(fileDeletes.some((u) => u.includes('s1'))).toBe(false);
+    expect(fileDeletesAsync.some((u) => u.includes('s1'))).toBe(false);
   });
 
   it('no-op for missing item', () => {
@@ -1504,7 +1510,7 @@ describe('removeCachedAlbumSong', () => {
     expect(album.songIds).toEqual(['s1', 's3']);
     // Now partial: 2 of 3.
     expect(album.songIds.length).toBeLessThan(album.expectedSongCount);
-    expect(fileDeletes.some((u) => u.includes('s2'))).toBe(true);
+    expect(fileDeletesAsync.some((u) => u.includes('s2'))).toBe(true);
   });
 
   it('preserves the file when the song is still referenced elsewhere', () => {
@@ -1516,7 +1522,7 @@ describe('removeCachedAlbumSong', () => {
 
     expect(removeCachedAlbumSong('album-1', 's1')).toBe(true);
     // s1 survives in pl-1 → file kept; album-1 now partial.
-    expect(fileDeletes.some((u) => u.includes('s1'))).toBe(false);
+    expect(fileDeletesAsync.some((u) => u.includes('s1'))).toBe(false);
     expect(musicCacheStore.getState().cachedItems['album-1'].songIds).toEqual(['s2']);
   });
 
@@ -1527,7 +1533,7 @@ describe('removeCachedAlbumSong', () => {
 
     expect(removeCachedAlbumSong('album-1', 's1')).toBe(true);
     expect(musicCacheStore.getState().cachedItems['album-1']).toBeUndefined();
-    expect(fileDeletes.some((u) => u.includes('s1'))).toBe(true);
+    expect(fileDeletesAsync.some((u) => u.includes('s1'))).toBe(true);
   });
 
   it('returns false for a missing item', () => {
@@ -1612,7 +1618,7 @@ describe('syncCachedPlaylistTracks', () => {
 
     syncCachedPlaylistTracks('pl-1', ['s2']);
 
-    expect(fileDeletes.some((u) => u.includes('s1'))).toBe(true);
+    expect(fileDeletesAsync.some((u) => u.includes('s1'))).toBe(true);
   });
 });
 
