@@ -1,5 +1,8 @@
 # Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
 
+# Local dev tools / test harnesses (contain personal/internal server details)
+tools/
+
 # dependencies
 node_modules/
 
