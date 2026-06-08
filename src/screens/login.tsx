@@ -172,9 +172,18 @@ export function LoginScreen() {
       return;
     }
 
-    // Check if the error is SSL-related
+    // Check if the error is SSL-related.
     const errorMsg = result.error || t('connectionFailed');
-    if (isSSLError(errorMsg)) {
+    // iOS surfaces a self-signed / untrusted TLS rejection from RN's fetch as
+    // the GENERIC "The network connection was lost" (-1005) — not a cert error
+    // string isSSLError can recognise. Treat that case as a possible cert issue
+    // too and let the cert probe below decide: getCertificateInfo only succeeds
+    // against a real TLS server, so a genuine network drop falls through to the
+    // error path.
+    const maybeCertIssue =
+      isSSLError(errorMsg) ||
+      (Platform.OS === 'ios' && /network connection was lost/i.test(errorMsg));
+    if (maybeCertIssue) {
       // Try to fetch the certificate for inspection
       try {
         const hostname = extractHostname(url);
