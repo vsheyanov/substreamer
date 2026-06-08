@@ -154,6 +154,14 @@ class ExpoAsyncFsModule : Module() {
           }
 
           val body = response.body ?: throw Exception("Empty response body")
+          // Completion is judged by HTTP status + a clean read to EOF, NOT by
+          // matching bytes-written against Content-Length. Subsonic estimates
+          // Content-Length for on-the-fly transcodes, so the real byte count
+          // legitimately differs from the header — a length check would reject
+          // good downloads. A genuinely incomplete transfer surfaces as a
+          // non-success status (handled above) or a stream read error thrown
+          // out of copyTo below; reaching the end cleanly on a 2xx response is
+          // authoritative completion.
           body.byteStream().use { input ->
             FileOutputStream(destFile).use { output ->
               input.copyTo(output)

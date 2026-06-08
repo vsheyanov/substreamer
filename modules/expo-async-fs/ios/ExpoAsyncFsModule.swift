@@ -8,14 +8,11 @@ public class ExpoAsyncFsModule: Module {
     Events("onDownloadProgress")
 
     AsyncFunction("listDirectoryAsync") { (uri: String) -> [String] in
-      guard let url = URL(string: uri) else { return [] }
-      let contents = try FileManager.default.contentsOfDirectory(atPath: url.path)
-      return contents
+      return try FileManager.default.contentsOfDirectory(atPath: Self.resolvePath(uri))
     }
 
     AsyncFunction("getDirectorySizeAsync") { (uri: String) -> Int in
-      guard let url = URL(string: uri) else { return 0 }
-      return Self.directorySize(at: url)
+      return Self.directorySize(at: Self.fileUrl(uri))
     }
 
     // One off-thread call that returns each entry's name + size + type, so
@@ -23,7 +20,7 @@ public class ExpoAsyncFsModule: Module {
     // (expo-file-system's .exists/.size are sync-only). Used by
     // reconcileImageCache to walk the cover-art cache without blocking JS.
     AsyncFunction("listDirectoryWithSizesAsync") { (uri: String) -> [[String: Any]] in
-      guard let url = URL(string: uri) else { return [] }
+      let url = Self.fileUrl(uri)
       let fm = FileManager.default
       let names = try fm.contentsOfDirectory(atPath: url.path)
       return names.map { name in
@@ -46,14 +43,12 @@ public class ExpoAsyncFsModule: Module {
     // thread (expo-file-system's are sync-only). `size` is 0 for missing
     // entries and directories.
     AsyncFunction("statAsync") { (uri: String) -> [String: Any] in
-      guard let url = URL(string: uri) else {
-        return ["exists": false, "size": 0, "isDirectory": false]
-      }
+      let path = Self.resolvePath(uri)
       let fm = FileManager.default
       var isDir: ObjCBool = false
-      let exists = fm.fileExists(atPath: url.path, isDirectory: &isDir)
+      let exists = fm.fileExists(atPath: path, isDirectory: &isDir)
       let size: Int = (exists && !isDir.boolValue)
-        ? ((try? fm.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0)
+        ? ((try? fm.attributesOfItem(atPath: path)[.size] as? Int) ?? 0)
         : 0
       return [
         "exists": exists,
@@ -64,10 +59,10 @@ public class ExpoAsyncFsModule: Module {
 
     // Off-thread file delete. Returns true if a file existed and was deleted.
     AsyncFunction("deleteFileAsync") { (uri: String) -> Bool in
-      guard let url = URL(string: uri) else { return false }
+      let path = Self.resolvePath(uri)
       let fm = FileManager.default
-      guard fm.fileExists(atPath: url.path) else { return false }
-      try fm.removeItem(atPath: url.path)
+      guard fm.fileExists(atPath: path) else { return false }
+      try fm.removeItem(atPath: path)
       return true
     }
 
@@ -76,10 +71,10 @@ public class ExpoAsyncFsModule: Module {
     // unlink potentially thousands of files on the JS thread. FileManager's
     // removeItem is recursive for directories.
     AsyncFunction("deleteDirectoryAsync") { (uri: String) -> Bool in
-      guard let url = URL(string: uri) else { return false }
+      let path = Self.resolvePath(uri)
       let fm = FileManager.default
-      guard fm.fileExists(atPath: url.path) else { return false }
-      try fm.removeItem(atPath: url.path)
+      guard fm.fileExists(atPath: path) else { return false }
+      try fm.removeItem(atPath: path)
       return true
     }
 
@@ -87,9 +82,10 @@ public class ExpoAsyncFsModule: Module {
       guard let url = URL(string: urlString) else {
         throw DownloadError.invalidUrl
       }
-      guard let destUrl = URL(string: destinationUri) else {
-        throw DownloadError.invalidDestination
-      }
+      // Remote URL above keeps URL(string:); the destination is a local file
+      // path, so resolve it via the space-tolerant resolver (a literal space
+      // would make URL(string:) nil and fail every download to such a path).
+      let destUrl = Self.fileUrl(destinationUri)
 
       var request = URLRequest(url: url)
       request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -134,6 +130,24 @@ public class ExpoAsyncFsModule: Module {
         "bytes": fileSize,
       ]
     }
+  }
+
+  /// Resolve a file URI (or bare path) to a filesystem path. Mirrors the
+  /// expo-image-resize resolver: URL(string:) percent-decodes a well-formed
+  /// file:// URI, but returns nil when the URI carries a literal (unencoded)
+  /// space — in which case we strip the scheme so paths with spaces still
+  /// resolve instead of silently failing the whole operation. A bare path
+  /// (no scheme) is returned unchanged.
+  private static func resolvePath(_ uri: String) -> String {
+    if uri.hasPrefix("file://") {
+      return URL(string: uri)?.path ?? String(uri.dropFirst("file://".count))
+    }
+    return uri
+  }
+
+  /// Convenience for the call sites that need a file URL rather than a path.
+  private static func fileUrl(_ uri: String) -> URL {
+    return URL(fileURLWithPath: resolvePath(uri))
   }
 
   private static func directorySize(at url: URL) -> Int {
