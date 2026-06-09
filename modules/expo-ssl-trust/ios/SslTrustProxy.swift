@@ -91,13 +91,18 @@ final class SslTrustProxy: NSObject {
     /// upstreams are registered.
     func ensureRunning() {
         guard hasUpstreams else { return }
-        stateLock.withLock {
+        // NB: the `return` must propagate out of `ensureRunning`, not just the
+        // closure — otherwise start() runs even when already bound, spawning a
+        // duplicate listener on a NEW port (stale port → dead connection).
+        let alreadyRunning: Bool = stateLock.withLock {
             if let l = listener, l.state == .ready || l.state == .setup {
-                return
+                return true
             }
             listener?.cancel()
             listener = nil
+            return false
         }
+        if alreadyRunning { return }
         start()
     }
 
@@ -113,7 +118,12 @@ final class SslTrustProxy: NSObject {
             Thread.sleep(forTimeInterval: 0.02)
             waited += 20
         }
-        return info()
+        let result = info()
+        if result == nil {
+            let (p, n) = stateLock.withLock { (self.boundPort, self.upstreamsByToken.count) }
+            NSLog("[SSLPROXY] ensureRunningAndWait nil after %dms (boundPort=%d upstreams=%d)", timeoutMs, Int(p), n)
+        }
+        return result
     }
 
     /// Stop the listener and forget the bound port. Tokens are retained so a
@@ -144,13 +154,20 @@ final class SslTrustProxy: NSObject {
                 case .ready:
                     if let p = l.port?.rawValue {
                         self.stateLock.withLock { self.boundPort = p }
+                        NSLog("[SSLPROXY] listening on 127.0.0.1:%d", Int(p))
+                    } else {
+                        NSLog("[SSLPROXY] .ready but no port")
                     }
-                case .failed, .cancelled:
+                case .failed(let error):
+                    NSLog("[SSLPROXY] listener FAILED: %@", "\(error)")
                     self.stateLock.withLock {
-                        if self.listener === l {
-                            self.listener = nil
-                            self.boundPort = 0
-                        }
+                        if self.listener === l { self.listener = nil; self.boundPort = 0 }
+                    }
+                case .waiting(let error):
+                    NSLog("[SSLPROXY] listener waiting: %@", "\(error)")
+                case .cancelled:
+                    self.stateLock.withLock {
+                        if self.listener === l { self.listener = nil; self.boundPort = 0 }
                     }
                 default:
                     break
@@ -243,9 +260,11 @@ final class SslTrustProxy: NSObject {
         // Resolve token → upstream base URL. Unknown token = access denied.
         guard let baseUrl = stateLock.withLock({ upstreamsByToken[req.token] }),
               let upstream = URL(string: baseUrl + req.upstreamPath) else {
+            NSLog("[SSLPROXY] 403 method=%@ token=%@ path=%@", req.method, req.token, req.upstreamPath)
             self.fail(conn, status: 403, reason: "Forbidden")
             return
         }
+        NSLog("[SSLPROXY] forward %@ -> %@", req.method, upstream.absoluteString)
 
         var request = URLRequest(url: upstream)
         request.httpMethod = req.method
@@ -264,9 +283,11 @@ final class SslTrustProxy: NSObject {
             do {
                 let (bytes, response) = try await self.session.bytes(for: request)
                 guard let http = response as? HTTPURLResponse else {
+                    NSLog("[SSLPROXY] upstream non-HTTP response")
                     self.fail(conn, status: 502, reason: "Bad Gateway")
                     return
                 }
+                NSLog("[SSLPROXY] upstream %d for %@", http.statusCode, upstream.absoluteString)
                 // Write status line + relayed response headers.
                 let head = Self.responseHead(from: http)
                 try await self.send(conn, Data(head.utf8))
@@ -288,6 +309,7 @@ final class SslTrustProxy: NSObject {
                 // Distinguish timeout from other upstream failures for the
                 // app's reachability monitoring.
                 let status = (error as? URLError)?.code == .timedOut ? 504 : 502
+                NSLog("[SSLPROXY] upstream ERROR (%d): %@", status, "\(error)")
                 self.fail(conn, status: status, reason: "Upstream Error")
             }
         }
