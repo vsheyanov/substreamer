@@ -1,7 +1,4 @@
 import { create } from 'zustand';
-import { createJSONStorage, persist } from 'zustand/middleware';
-
-import { kvStorage } from './persistence';
 
 export interface TrustedCertEntry {
   /** SHA-256 fingerprint of the trusted certificate (colon-separated hex) */
@@ -13,21 +10,27 @@ export interface TrustedCertEntry {
 }
 
 interface SslCertState {
-  /** Map of hostname -> trusted certificate entry */
+  /**
+   * Map of hostname -> trusted certificate entry.
+   *
+   * This is a NON-PERSISTED reactive MIRROR of the native trust store
+   * (`expo-ssl-trust`), which is the single source of truth — it's what the iOS
+   * URLProtocol swizzle / Android OkHttp actually enforce. Populated via
+   * `setTrustedCerts` after every native op (trust / remove / clear) and at
+   * boot, by `sslTrustService.refreshTrustedCertsFromNative()`. Do NOT mutate it
+   * directly — go through the native store so the two can't drift.
+   */
   trustedCerts: Record<string, TrustedCertEntry>;
   /**
-   * Set when the native trust store could not be installed (e.g. broken
-   * JSSE provider on a stripped Android OEM ROM). Null when healthy. The
-   * value is a short error message suitable for surfacing in a banner.
+   * Set when the native trust store could not be installed (e.g. broken JSSE
+   * provider on a stripped Android OEM ROM). Null when healthy.
    */
   installFailed: string | null;
-  /** Add or update a trusted certificate for a hostname */
-  trustCertificate: (hostname: string, sha256: string, validTo?: string) => void;
-  /** Remove a trusted certificate by hostname */
-  removeTrustedCertificate: (hostname: string) => void;
-  /** Check if a hostname has a trusted certificate */
+  /** Replace the cache with the latest snapshot read from the native store. */
+  setTrustedCerts: (certs: Record<string, TrustedCertEntry>) => void;
+  /** Check if a hostname has a trusted certificate (reads the mirror). */
   isTrusted: (hostname: string) => boolean;
-  /** Get the trusted fingerprint for a hostname, or null */
+  /** Get the trusted fingerprint for a hostname, or null. */
   getTrustedFingerprint: (hostname: string) => string | null;
   /** Record that the native trust store install failed. */
   setInstallFailed: (error: string | null) => void;
@@ -35,50 +38,16 @@ interface SslCertState {
   clearInstallFailed: () => void;
 }
 
-const PERSIST_KEY = 'substreamer-ssl-certs';
+export const sslCertStore = create<SslCertState>()((set, get) => ({
+  trustedCerts: {},
+  installFailed: null,
 
-export const sslCertStore = create<SslCertState>()(
-  persist(
-    (set, get) => ({
-      trustedCerts: {},
-      installFailed: null,
+  setTrustedCerts: (certs) => set({ trustedCerts: certs }),
 
-      trustCertificate: (hostname: string, sha256: string, validTo?: string) =>
-        set((state) => ({
-          trustedCerts: {
-            ...state.trustedCerts,
-            [hostname]: {
-              sha256: sha256.toUpperCase(),
-              acceptedAt: Date.now(),
-              ...(validTo ? { validTo } : {}),
-            },
-          },
-        })),
+  isTrusted: (hostname) => hostname in get().trustedCerts,
 
-      removeTrustedCertificate: (hostname: string) =>
-        set((state) => {
-          const { [hostname]: _, ...rest } = state.trustedCerts;
-          return { trustedCerts: rest };
-        }),
+  getTrustedFingerprint: (hostname) => get().trustedCerts[hostname]?.sha256 ?? null,
 
-      isTrusted: (hostname: string) => {
-        return hostname in get().trustedCerts;
-      },
-
-      getTrustedFingerprint: (hostname: string) => {
-        return get().trustedCerts[hostname]?.sha256 ?? null;
-      },
-
-      setInstallFailed: (error: string | null) => set({ installFailed: error }),
-      clearInstallFailed: () => set({ installFailed: null }),
-    }),
-    {
-      name: PERSIST_KEY,
-      storage: createJSONStorage(() => kvStorage),
-      // installFailed is transient: a fresh launch should re-evaluate.
-      partialize: (state) => ({
-        trustedCerts: state.trustedCerts,
-      }),
-    }
-  )
-);
+  setInstallFailed: (error) => set({ installFailed: error }),
+  clearInstallFailed: () => set({ installFailed: null }),
+}));

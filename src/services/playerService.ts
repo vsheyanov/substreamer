@@ -3,7 +3,7 @@
  * the Zustand playerStore in sync with the native player state.
  */
 
-import { AppState, type AppStateStatus } from 'react-native';
+import { AppState, Platform, type AppStateStatus } from 'react-native';
 import i18n from '../i18n/i18n';
 import TrackPlayer, {
   AppKilledPlaybackBehavior,
@@ -29,6 +29,7 @@ import { serverInfoStore } from '../store/serverInfoStore';
 import { shuffleArray } from '../utils/arrayHelpers';
 import { addCompletedScrobble, sendNowPlaying } from './scrobbleService';
 import { registerPlayerPlayStatListener } from './playStatsService';
+import { syncProxyUpstreams } from './sslTrustService';
 import { getLocalTrackUri, waitForTrackMapsReady } from './musicCacheService';
 import {
   persistQueue,
@@ -803,6 +804,13 @@ async function hydrateRestoredQueue(): Promise<void> {
     // 1. Prerequisites.
     await waitForTrackMapsReady();
     await ensureCoverArtAuth();
+    // (iOS) Register the self-signed streaming proxy and cache its port/token
+    // BEFORE building the restored tracks — otherwise getStreamUrl resolves to
+    // the raw https URL and AVPlayer fails on the self-signed cert. No-op when
+    // no self-signed host is configured (the upstream filter is empty).
+    if (Platform.OS === 'ios') {
+      await syncProxyUpstreams();
+    }
 
     const originalIndex = playerStore.getState().currentTrackIndex ?? 0;
     const originalChild = currentChildQueue[originalIndex] ?? null;

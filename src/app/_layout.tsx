@@ -77,7 +77,7 @@ import NetInfo from '@react-native-community/netinfo';
 import { startMonitoring, stopMonitoring } from '../services/connectivityService';
 import { initFailover } from '../services/failoverService';
 import { initScrobbleService } from '../services/scrobbleService';
-import { initSslTrustStore, trustCertificateForHost } from '../services/sslTrustService';
+import { initSslTrustStore, syncProxyUpstreams, trustCertificateForHost } from '../services/sslTrustService';
 import { runAutoBackupIfNeeded } from '../services/backupService';
 import { startAutoOffline, stopAutoOffline } from '../services/autoOfflineService';
 import { excludeFromBackup } from 'expo-backup-exclusions';
@@ -494,6 +494,11 @@ export default function RootLayout() {
       initPlayer();
       initScrobbleService();
       initFailover();
+      // (iOS) bring up the streaming proxy for AVPlayer if the active server is
+      // a trusted self-signed host. Session-driven: runs on every logged-in
+      // start (cold boot, login, reload) now that authStore is hydrated, so the
+      // proxy survives restarts without needing a re-login. No-op on Android.
+      void syncProxyUpstreams();
 
       const offline = offlineModeStore.getState().offlineMode;
 

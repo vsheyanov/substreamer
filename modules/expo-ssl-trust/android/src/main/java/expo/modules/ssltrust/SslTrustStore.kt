@@ -35,7 +35,8 @@ object SslTrustStore {
 
     data class TrustedCertEntry(
         val sha256Fingerprint: String,
-        val acceptedAt: Long
+        val acceptedAt: Long,
+        val validTo: String? = null
     )
 
     /**
@@ -51,10 +52,22 @@ object SslTrustStore {
     var lastInstallError: String? = null
         private set
 
-    fun init(context: Context) {
-        try {
+    /**
+     * Load persisted certs from prefs WITHOUT the JSSE/OkHttp trust-manager
+     * install (which can crash on stripped OEM ROMs). Safe + idempotent. Used by
+     * read-only ops (getTrustedCertificates / isCertificateTrusted / clearAll) so
+     * they never trigger the install for users who don't pin.
+     */
+    fun loadCerts(context: Context) {
+        if (prefs == null) {
             prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             load()
+        }
+    }
+
+    fun init(context: Context) {
+        try {
+            loadCerts(context)
             installCustomTrustManager()
         } catch (e: Throwable) {
             // Catastrophic failure (e.g. broken JSSE, denied prefs access).
@@ -75,7 +88,8 @@ object SslTrustStore {
                 val entry = obj.getJSONObject(hostname)
                 trustedCerts[hostname] = TrustedCertEntry(
                     sha256Fingerprint = entry.getString("sha256"),
-                    acceptedAt = entry.getLong("acceptedAt")
+                    acceptedAt = entry.getLong("acceptedAt"),
+                    validTo = if (entry.has("validTo")) entry.getString("validTo") else null
                 )
             }
         } catch (e: Exception) {
@@ -90,6 +104,7 @@ object SslTrustStore {
             val entryObj = JSONObject()
             entryObj.put("sha256", entry.sha256Fingerprint)
             entryObj.put("acceptedAt", entry.acceptedAt)
+            entry.validTo?.let { entryObj.put("validTo", it) }
             obj.put(hostname, entryObj)
         }
         prefs?.edit()?.putString(KEY_TRUSTED_CERTS, obj.toString())?.apply()
@@ -99,14 +114,23 @@ object SslTrustStore {
         certDerData[hostname] = derData
     }
 
-    fun trustCertificate(hostname: String, sha256Fingerprint: String) {
+    fun trustCertificate(hostname: String, sha256Fingerprint: String, validTo: String? = null) {
         trustedCerts[hostname] = TrustedCertEntry(
             sha256Fingerprint = sha256Fingerprint.uppercase(),
-            acceptedAt = System.currentTimeMillis()
+            acceptedAt = System.currentTimeMillis(),
+            validTo = validTo
         )
         save()
         // Re-install trust manager with updated store
         installCustomTrustManager()
+    }
+
+    /** Remove every trusted certificate (logout). The AppTrustManager reads the
+     *  live (now-empty) map, so no re-install is needed. */
+    fun clearAllTrustedCertificates() {
+        trustedCerts.clear()
+        certDerData.clear()
+        save()
     }
 
     fun removeTrustedCertificate(hostname: String) {
@@ -117,11 +141,13 @@ object SslTrustStore {
 
     fun getTrustedCertificates(): List<Map<String, Any>> {
         return trustedCerts.map { (hostname, entry) ->
-            mapOf(
+            val m = mutableMapOf<String, Any>(
                 "hostname" to hostname,
                 "sha256Fingerprint" to entry.sha256Fingerprint,
                 "acceptedAt" to entry.acceptedAt
             )
+            entry.validTo?.let { m["validTo"] = it }
+            m
         }
     }
 

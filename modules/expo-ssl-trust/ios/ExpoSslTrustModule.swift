@@ -63,15 +63,21 @@ public class ExpoSslTrustModule: Module {
             }
         }
         
-        AsyncFunction("trustCertificate") { (hostname: String, sha256Fingerprint: String, promise: Promise) in
+        AsyncFunction("trustCertificate") { (hostname: String, sha256Fingerprint: String, validTo: String?, promise: Promise) in
             SslTrustStore.shared.initialize()
-            SslTrustStore.shared.trustCertificate(hostname: hostname, sha256Fingerprint: sha256Fingerprint)
+            SslTrustStore.shared.trustCertificate(hostname: hostname, sha256Fingerprint: sha256Fingerprint, validTo: validTo)
             promise.resolve(nil)
         }
-        
+
         AsyncFunction("removeTrustedCertificate") { (hostname: String, promise: Promise) in
             SslTrustStore.shared.initialize()
             SslTrustStore.shared.removeTrustedCertificate(hostname: hostname)
+            promise.resolve(nil)
+        }
+
+        AsyncFunction("clearAllTrustedCertificates") { (promise: Promise) in
+            SslTrustStore.shared.initialize()
+            SslTrustStore.shared.clearAllTrustedCertificates()
             promise.resolve(nil)
         }
         

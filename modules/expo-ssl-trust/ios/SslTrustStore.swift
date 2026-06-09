@@ -38,6 +38,7 @@ class SslTrustStore: NSObject {
     struct TrustedCertEntry: Codable {
         let sha256Fingerprint: String
         let acceptedAt: Double // epoch ms
+        let validTo: String?   // cert expiry (ISO 8601), if known
     }
     
     // MARK: - Initialization
@@ -49,9 +50,26 @@ class SslTrustStore: NSObject {
     }
     
     private func load() {
-        guard let data = UserDefaults.standard.data(forKey: userDefaultsKey) else { return }
-        let decoded = (try? JSONDecoder().decode([String: TrustedCertEntry].self, from: data)) ?? [:]
-        withStoreLock { trustedCerts = decoded }
+        guard let data = UserDefaults.standard.data(forKey: userDefaultsKey) else {
+            return
+        }
+        // Lenient field-by-field parse rather than a strict Codable decode:
+        // adding a struct field (e.g. validTo) must NEVER invalidate a blob
+        // written by an older app version — a strict decode that throws would
+        // drop every entry and silently lose the user's trust on update.
+        guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: [String: Any]] else {
+            SslTrustLogger.log("trust store not parseable — keeping in-memory state")
+            return
+        }
+        var loaded: [String: TrustedCertEntry] = [:]
+        for (hostname, fields) in obj {
+            guard let fp = fields["sha256Fingerprint"] as? String else { continue }
+            let acceptedAt = (fields["acceptedAt"] as? NSNumber)?.doubleValue ?? 0
+            let validTo = fields["validTo"] as? String
+            loaded[hostname] = TrustedCertEntry(
+                sha256Fingerprint: fp, acceptedAt: acceptedAt, validTo: validTo)
+        }
+        withStoreLock { trustedCerts = loaded }
     }
 
     private func save() {
@@ -67,10 +85,11 @@ class SslTrustStore: NSObject {
     
     // MARK: - Trust Management
     
-    func trustCertificate(hostname: String, sha256Fingerprint: String) {
+    func trustCertificate(hostname: String, sha256Fingerprint: String, validTo: String? = nil) {
         let entry = TrustedCertEntry(
             sha256Fingerprint: sha256Fingerprint.uppercased(),
-            acceptedAt: Double(Date().timeIntervalSince1970 * 1000)
+            acceptedAt: Double(Date().timeIntervalSince1970 * 1000),
+            validTo: validTo
         )
         // Write the map entry and read back any stored DER in one critical section.
         let derData: Data? = withStoreLock {
@@ -98,13 +117,28 @@ class SslTrustStore: NSObject {
             [
                 "hostname": hostname,
                 "sha256Fingerprint": entry.sha256Fingerprint,
-                "acceptedAt": entry.acceptedAt
+                "acceptedAt": entry.acceptedAt,
+                "validTo": entry.validTo as Any,
             ]
         }
     }
 
     func isCertificateTrusted(hostname: String) -> Bool {
         return withStoreLock { trustedCerts[hostname] != nil }
+    }
+
+    /// Remove every trusted certificate (logout). Clears the in-memory map,
+    /// persists the empty store, and drops the keychain entries.
+    func clearAllTrustedCertificates() {
+        let hosts = withStoreLock { Array(trustedCerts.keys) }
+        withStoreLock {
+            trustedCerts.removeAll()
+            certDataStore.removeAll()
+        }
+        save()
+        for hostname in hosts {
+            removeCertFromKeychain(hostname: hostname)
+        }
     }
     
     /// Check if a server trust is valid against our custom store.

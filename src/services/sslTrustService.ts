@@ -4,13 +4,36 @@ import {
   initTrustStore,
   trustCertificate as nativeTrustCertificate,
   removeTrustedCertificate as nativeRemoveTrustedCertificate,
+  clearAllTrustedCertificates as nativeClearAllTrustedCertificates,
   getTrustedCertificates as nativeGetTrustedCertificates,
   refreshProxyUpstreams,
   refreshProxyInfo,
 } from '../../modules/expo-ssl-trust/src';
 import { authStore } from '../store/authStore';
-import { sslCertStore } from '../store/sslCertStore';
+import { sslCertStore, type TrustedCertEntry } from '../store/sslCertStore';
 import { fireAndForget } from '../utils/fireAndForget';
+
+/**
+ * Re-read the NATIVE trust store (the single source of truth) and replace the
+ * JS `sslCertStore` mirror with it. Call after every native trust op and at
+ * boot so the UI + prompt logic always reflect exactly what's enforced.
+ */
+export async function refreshTrustedCertsFromNative(): Promise<void> {
+  try {
+    const certs = await nativeGetTrustedCertificates();
+    const map: Record<string, TrustedCertEntry> = {};
+    for (const c of certs) {
+      map[c.hostname] = {
+        sha256: c.sha256Fingerprint,
+        acceptedAt: c.acceptedAt,
+        ...(c.validTo ? { validTo: c.validTo } : {}),
+      };
+    }
+    sslCertStore.getState().setTrustedCerts(map);
+  } catch (err) {
+    console.warn('[sslTrustService] refresh trusted certs from native failed:', err);
+  }
+}
 
 /**
  * Reconcile the iOS local reverse proxy with the app's configured server URLs.
@@ -20,10 +43,24 @@ import { fireAndForget } from '../utils/fireAndForget';
  * Android / when no configured host is self-signed.
  */
 export async function syncProxyUpstreams(): Promise<void> {
+  // The mirror must reflect native trust before we decide which hosts to route
+  // (boot can call this before the initial mirror refresh has landed).
+  await refreshTrustedCertsFromNative();
+  const trusted = sslCertStore.getState().trustedCerts;
   const { serverUrl, primaryServerUrl, secondaryServerUrl } = authStore.getState();
-  const urls = [serverUrl, primaryServerUrl, secondaryServerUrl].filter(
-    (u): u is string => !!u,
-  );
+  // Register ONLY self-signed (pinned) hosts. A normal-CA server has no entry
+  // in the trust store, so it's never routed through the proxy — it talks
+  // direct HTTPS (and a CA secondary in a failover pair stays direct). This is
+  // what keeps `resolveServerBase` an identity for non-self-signed hosts.
+  const urls = [serverUrl, primaryServerUrl, secondaryServerUrl]
+    .filter((u): u is string => !!u)
+    .filter((u) => {
+      try {
+        return !!trusted[new URL(u).hostname];
+      } catch {
+        return false;
+      }
+    });
   await refreshProxyUpstreams([...new Set(urls)]);
 }
 
@@ -55,22 +92,20 @@ export function initSslTrustStore(): void {
     if (state === 'active') fireAndForget(refreshProxyInfo(), 'sslTrust.refreshProxyInfo');
   });
 
-  const { trustedCerts } = sslCertStore.getState();
-  if (Object.keys(trustedCerts).length === 0) {
-    // No persisted certs → no need to touch native JSSE wiring at all.
-    return;
-  }
-
-  // Persisted certs present — install eagerly, sync them, and prime the proxy
-  // so the first request after a cold start (iOS self-signed) is routed.
+  // Mirror the NATIVE store (source of truth) into the JS cache at boot. The
+  // Android OkHttp trust manager is installed natively at Application.onCreate
+  // (ExpoSslTrustPackage) — the only point early enough, before RN builds its
+  // fixed HTTP client — so this JS path is purely a mirror + (for returning
+  // users) a redundant ensure-installed. The streaming proxy is brought up
+  // separately by the session-driven effect in _layout.
   fireAndForget(
-    ensureNativeTrustStoreInstalled().then((ok) => {
-      if (ok) {
-        fireAndForget(syncToNative(), 'sslTrust.syncToNative');
-        fireAndForget(syncProxyUpstreams(), 'sslTrust.syncProxyUpstreams');
+    (async () => {
+      await refreshTrustedCertsFromNative();
+      if (Object.keys(sslCertStore.getState().trustedCerts).length > 0) {
+        await ensureNativeTrustStoreInstalled();
       }
-    }),
-    'sslTrust.ensureInstalled',
+    })(),
+    'sslTrust.init',
   );
 }
 
@@ -111,23 +146,9 @@ export async function ensureNativeTrustStoreInstalled(): Promise<boolean> {
 }
 
 /**
- * Sync all trusted certificates from the Zustand store to the native module.
- */
-async function syncToNative(): Promise<void> {
-  const { trustedCerts } = sslCertStore.getState();
-  for (const [hostname, entry] of Object.entries(trustedCerts)) {
-    try {
-      await nativeTrustCertificate(hostname, entry.sha256);
-    } catch (err) {
-      console.warn(`[sslTrustService] Failed to sync cert for ${hostname}:`, err);
-    }
-  }
-}
-
-/**
- * Trust a certificate for a hostname, persisting in both Zustand and native
- * stores. Triggers a native install on first call (for users who launched
- * with no persisted certs).
+ * Trust a certificate for a hostname. Writes the NATIVE store (the single
+ * source of truth) and refreshes the JS mirror from it. Triggers the native
+ * install on first call (for users who launched with no certs).
  */
 export async function trustCertificateForHost(
   hostname: string,
@@ -135,66 +156,50 @@ export async function trustCertificateForHost(
   validTo?: string,
 ): Promise<void> {
   // Ensure the native trust manager is wired before we hand it a cert.
-  // If install fails, persist anyway — the JS-side store still drives
-  // the certificate prompt UI even when native pinning is unavailable.
   await ensureNativeTrustStoreInstalled();
-
-  // Persist in Zustand store (SQLite)
-  sslCertStore.getState().trustCertificate(hostname, sha256Fingerprint, validTo);
-
-  // Sync to native store. Swallow per-cert failures: install may have
-  // failed entirely, in which case the call is a no-op against the stub.
   try {
-    await nativeTrustCertificate(hostname, sha256Fingerprint);
+    await nativeTrustCertificate(hostname, sha256Fingerprint, validTo);
   } catch (err) {
-    console.warn(`[sslTrustService] Failed to push cert for ${hostname}:`, err);
+    console.warn(`[sslTrustService] Failed to trust cert for ${hostname}:`, err);
   }
+  await refreshTrustedCertsFromNative();
 
-  // NOTE: do NOT reconcile proxy upstreams here. During the login flow
-  // `authStore.serverUrl` isn't set yet, so syncProxyUpstreams() would
-  // reconcile to an empty/stale set and clobber the registration that the
-  // subsequent `login()` retry makes. `login()` registers the URL it's
-  // connecting to itself (and boot/untrust reconcile from authStore), so this
-  // host is covered without the racey call here.
+  // If we're already in a session (e.g. an in-place re-trust from the
+  // "Certificate changed" banner, not a fresh login), bring the streaming proxy
+  // up now — the session-driven effect in _layout only fires on login/boot.
+  // Gated on serverUrl so it doesn't fire mid-login (authStore not set yet),
+  // which is where the _layout effect handles registration instead.
+  if (authStore.getState().serverUrl) {
+    fireAndForget(syncProxyUpstreams(), 'sslTrust.syncProxyUpstreams');
+  }
 }
 
 /**
- * Remove trust for a hostname from both Zustand and native stores.
+ * Remove trust for a hostname from the native store, refresh the mirror, and
+ * reconcile the proxy (the host is no longer routed).
  */
 export async function removeTrustForHost(hostname: string): Promise<void> {
-  sslCertStore.getState().removeTrustedCertificate(hostname);
   try {
     await nativeRemoveTrustedCertificate(hostname);
   } catch (err) {
     console.warn(`[sslTrustService] Failed to remove cert for ${hostname}:`, err);
   }
+  await refreshTrustedCertsFromNative();
   // (iOS) drop this host from the proxy so we no longer route through it.
   fireAndForget(syncProxyUpstreams(), 'sslTrust.syncProxyUpstreams');
 }
 
 /**
- * Clear the NATIVE trust store on logout and stop the proxy. The JS
- * `sslCertStore` is reset separately by `resetAllStores`, but the native
- * `SslTrustStore` (what the iOS URLProtocol swizzle / Android OkHttp actually
- * read) and the proxy upstreams are not — without this the device keeps
- * trusting the self-signed cert after logout.
- *
- * Queries the NATIVE store as the source of truth (it may hold certs the JS
- * store no longer lists — e.g. orphaned by a logout from before this existed)
- * and removes each. Never rejects (best-effort).
+ * Clear ALL trust on logout: wipe the native store (the single source of
+ * truth), stop the proxy, and empty the JS mirror. Awaited by the logout
+ * handler before navigating to login so a self-signed re-login re-prompts.
+ * Never rejects (best-effort).
  */
 export async function clearAllNativeTrust(): Promise<void> {
   try {
-    const certs = await nativeGetTrustedCertificates();
-    for (const cert of certs) {
-      try {
-        await nativeRemoveTrustedCertificate(cert.hostname);
-      } catch (err) {
-        console.warn(`[sslTrustService] logout: failed to clear native cert ${cert.hostname}:`, err);
-      }
-    }
+    await nativeClearAllTrustedCertificates();
   } catch (err) {
-    console.warn('[sslTrustService] logout: failed to read native trust store:', err);
+    console.warn('[sslTrustService] logout: clearAllTrustedCertificates failed:', err);
   }
   // Stop the iOS streaming proxy (no upstreams remain). No-op on Android.
   try {
@@ -202,6 +207,8 @@ export async function clearAllNativeTrust(): Promise<void> {
   } catch {
     /* best-effort */
   }
+  // Empty the JS mirror to match native.
+  await refreshTrustedCertsFromNative();
 }
 
 /**

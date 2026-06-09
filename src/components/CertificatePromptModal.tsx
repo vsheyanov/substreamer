@@ -4,7 +4,6 @@ import i18next from 'i18next';
 import { useTranslation } from 'react-i18next';
 import {
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -54,11 +53,8 @@ export const CertificatePromptModal = memo(function CertificatePromptModal({
   if (!certInfo) return null;
 
   return (
-    <BottomSheet visible={visible} onClose={onCancel} maxHeight="85%">
-      <ScrollView
-        style={styles.content}
-        showsVerticalScrollIndicator={false}
-      >
+    <BottomSheet visible={visible} onClose={onCancel} maxHeight="85%" scrollable>
+      <View style={styles.content}>
           {/* Header */}
           <View style={styles.headerRow}>
             <Ionicons
@@ -183,7 +179,7 @@ export const CertificatePromptModal = memo(function CertificatePromptModal({
               {t('cancel')}
             </Text>
           </Pressable>
-        </ScrollView>
+        </View>
     </BottomSheet>
   );
 });

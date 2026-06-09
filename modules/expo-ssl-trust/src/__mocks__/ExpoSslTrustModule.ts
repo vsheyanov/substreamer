@@ -12,6 +12,7 @@ export default {
   }),
   trustCertificate: jest.fn().mockResolvedValue(undefined),
   removeTrustedCertificate: jest.fn().mockResolvedValue(undefined),
+  clearAllTrustedCertificates: jest.fn().mockResolvedValue(undefined),
   getTrustedCertificates: jest.fn().mockResolvedValue([]),
   isCertificateTrusted: jest.fn().mockResolvedValue(false),
   syncProxyUpstreams: jest.fn().mockResolvedValue(null),

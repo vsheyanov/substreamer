@@ -7,6 +7,7 @@ import { BottomChrome } from '../components/BottomChrome';
 import { GradientBackground } from '../components/GradientBackground';
 import { AccountCard } from '../components/settings/AccountCard';
 import { LibraryScanCard } from '../components/settings/LibraryScanCard';
+import { ServerAddressCard } from '../components/settings/ServerAddressCard';
 import { ServerInformationCard } from '../components/settings/ServerInformationCard';
 import { settingsStyles } from '../styles/settingsStyles';
 
@@ -28,6 +29,7 @@ export function SettingsServerScreen() {
         showsVerticalScrollIndicator={false}
       >
         <ServerInformationCard />
+        <ServerAddressCard />
         <LibraryScanCard />
         <AccountCard />
       </ScrollView>

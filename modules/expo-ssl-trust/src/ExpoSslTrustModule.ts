@@ -11,8 +11,13 @@ interface ExpoSslTrustNative {
   initTrustStore(): Promise<TrustStoreInstallStatus>;
   getInstallStatus(): Promise<TrustStoreInstallStatus>;
   getCertificateInfo(url: string): Promise<CertificateInfo>;
-  trustCertificate(hostname: string, sha256Fingerprint: string): Promise<void>;
+  trustCertificate(
+    hostname: string,
+    sha256Fingerprint: string,
+    validTo: string | null,
+  ): Promise<void>;
   removeTrustedCertificate(hostname: string): Promise<void>;
+  clearAllTrustedCertificates(): Promise<void>;
   getTrustedCertificates(): Promise<TrustedCert[]>;
   isCertificateTrusted(hostname: string): Promise<boolean>;
   /** iOS-only local reverse proxy. Android resolves these via stubs (no proxy). */
@@ -43,6 +48,7 @@ try {
       Promise.reject(new Error('expo-ssl-trust native module not available. Rebuild the app.')),
     trustCertificate: noop,
     removeTrustedCertificate: noop,
+    clearAllTrustedCertificates: noop,
     getTrustedCertificates: () => Promise.resolve([]),
     isCertificateTrusted: () => Promise.resolve(false),
     syncProxyUpstreams: () => Promise.resolve(null),

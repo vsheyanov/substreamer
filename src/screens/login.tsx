@@ -17,7 +17,7 @@ import { CertificatePromptModal } from '../components/CertificatePromptModal';
 import { LanguageSelector } from '../components/LanguageSelector';
 import WaveformLogo from '../components/WaveformLogo';
 import { fetchServerInfo, login as subsonicLogin } from '../services/subsonicService';
-import { syncProxyUpstreams, trustCertificateForHost } from '../services/sslTrustService';
+import { trustCertificateForHost } from '../services/sslTrustService';
 import { authStore } from '../store/authStore';
 import { onboardingStore } from '../store/onboardingStore';
 import { isDbHealthy } from '../store/persistence';
@@ -72,9 +72,8 @@ export function LoginScreen() {
 
       if (result.success) {
         setSession(url, user, pass, result.version, legacyAuth);
-        // (iOS) now that we're authenticated + the cert is trusted, bring up the
-        // streaming proxy for AVPlayer. No-op on Android / for CA certs.
-        void syncProxyUpstreams().catch(() => {});
+        // The streaming proxy is brought up by the session-driven effect in
+        // _layout (runs whenever logged-in + hydrated), so no proxy call here.
         const info = await fetchServerInfo();
         if (info) serverInfoStore.getState().setServerInfo(info);
         router.replace('/');
@@ -166,9 +165,7 @@ export function LoginScreen() {
     if (result.success) {
       setLoading(false);
       setSession(url, user, pass, result.version, legacyAuth);
-      // (iOS) bring up the streaming proxy for AVPlayer post-login. No-op on
-      // Android / for CA certs / non-self-signed.
-      void syncProxyUpstreams().catch(() => {});
+      // Streaming proxy is brought up by the session-driven effect in _layout.
       const info = await fetchServerInfo();
       if (info) serverInfoStore.getState().setServerInfo(info);
       if (!onboardingStore.getState().hasCompleted) {
@@ -216,11 +213,12 @@ export function LoginScreen() {
   };
 
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      style={styles.container}
-    >
-      <View style={styles.inner}>
+    <View style={styles.root}>
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={styles.container}
+      >
+        <View style={styles.inner}>
         {/* Logo */}
         <View style={styles.logoContainer}>
           <WaveformLogo size={80} color="#FFFFFF" />
@@ -246,6 +244,8 @@ export function LoginScreen() {
             autoCorrect={false}
             keyboardType="url"
             editable={!loading}
+            multiline={false}
+            numberOfLines={1}
           />
           <TextInput
             style={styles.input}
@@ -355,11 +355,19 @@ export function LoginScreen() {
         onTrust={handleTrustCertificate}
         onCancel={handleCancelCert}
       />
-    </KeyboardAvoidingView>
+      </KeyboardAvoidingView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  // Full-bleed blue background: fills the whole screen incl. behind the
+  // navigation bar / bottom safe area, independent of the KeyboardAvoidingView's
+  // measured height (which on Android can stop short of the nav bar → black bar).
+  root: {
+    flex: 1,
+    backgroundColor: PRIMARY,
+  },
   container: {
     flex: 1,
     backgroundColor: PRIMARY,

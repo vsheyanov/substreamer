@@ -138,6 +138,11 @@ export const ConnectivityBanner = memo(function ConnectivityBanner() {
               <Animated.Text style={styles.label} numberOfLines={1}>
                 {t(config.messageKey)}
               </Animated.Text>
+              {/* The SSL-error banner is tappable (opens the cert prompt to
+                  re-trust in place). Show a chevron so that's discoverable. */}
+              {tappable ? (
+                <Ionicons name="chevron-forward" size={15} color="rgba(255, 255, 255, 0.55)" />
+              ) : null}
             </Animated.View>
           </Animated.View>
         </Pressable>

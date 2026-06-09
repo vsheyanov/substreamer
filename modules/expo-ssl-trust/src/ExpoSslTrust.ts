@@ -26,6 +26,8 @@ export interface TrustedCert {
   sha256Fingerprint: string;
   /** Timestamp when the user accepted this certificate (epoch ms) */
   acceptedAt: number;
+  /** Certificate validity end date as ISO 8601 string, if known */
+  validTo?: string;
 }
 
 /**
@@ -56,9 +58,10 @@ export async function getCertificateInfo(url: string): Promise<CertificateInfo> 
  */
 export async function trustCertificate(
   hostname: string,
-  sha256Fingerprint: string
+  sha256Fingerprint: string,
+  validTo?: string,
 ): Promise<void> {
-  return ExpoSslTrustModule.trustCertificate(hostname, sha256Fingerprint);
+  return ExpoSslTrustModule.trustCertificate(hostname, sha256Fingerprint, validTo ?? null);
 }
 
 /**
@@ -66,6 +69,14 @@ export async function trustCertificate(
  */
 export async function removeTrustedCertificate(hostname: string): Promise<void> {
   return ExpoSslTrustModule.removeTrustedCertificate(hostname);
+}
+
+/**
+ * Remove ALL trusted certificates (used on logout). The native store is the
+ * single source of truth, so this clears trust everywhere it's enforced.
+ */
+export async function clearAllTrustedCertificates(): Promise<void> {
+  return ExpoSslTrustModule.clearAllTrustedCertificates();
 }
 
 /**
@@ -192,15 +203,10 @@ function normalizeBase(url: string): string {
  */
 export function resolveServerBase(url: string): string {
   if (Platform.OS !== 'ios') return url;
-  if (!cachedProxyInfo) {
-    console.log('[SSLPROXY] resolve (no proxy cache):', url); // TEMP diagnostic
-    return url;
-  }
+  if (!cachedProxyInfo) return url;
   const norm = normalizeBase(url);
   const match = cachedProxyInfo.upstreams.find((u) => normalizeBase(u.baseUrl) === norm);
-  const result = match ? `http://127.0.0.1:${cachedProxyInfo.port}/${match.token}` : url;
-  console.log('[SSLPROXY] resolve:', url, '->', result); // TEMP diagnostic
-  return result;
+  return match ? `http://127.0.0.1:${cachedProxyInfo.port}/${match.token}` : url;
 }
 
 /**
@@ -213,9 +219,8 @@ export async function refreshProxyUpstreams(baseUrls: string[]): Promise<void> {
   if (Platform.OS !== 'ios') return;
   try {
     cachedProxyInfo = await ExpoSslTrustModule.syncProxyUpstreams(baseUrls);
-    console.log('[SSLPROXY] syncProxyUpstreams', JSON.stringify(baseUrls), '->', JSON.stringify(cachedProxyInfo)); // TEMP diagnostic
   } catch (err) {
-    console.warn('[SSLPROXY] syncProxyUpstreams failed:', err);
+    console.warn('[expo-ssl-trust] syncProxyUpstreams failed:', err);
     cachedProxyInfo = null;
   }
 }

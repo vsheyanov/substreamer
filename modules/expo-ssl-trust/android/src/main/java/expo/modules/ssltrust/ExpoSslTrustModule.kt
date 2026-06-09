@@ -70,11 +70,11 @@ class ExpoSslTrustModule : Module() {
             }
         }
 
-        AsyncFunction("trustCertificate") { hostname: String, sha256Fingerprint: String, promise: Promise ->
+        AsyncFunction("trustCertificate") { hostname: String, sha256Fingerprint: String, validTo: String?, promise: Promise ->
             try {
                 val context = appContext.reactContext ?: throw Exception("React context not available")
-                SslTrustStore.init(context) // Ensure initialized
-                SslTrustStore.trustCertificate(hostname, sha256Fingerprint)
+                SslTrustStore.init(context) // trusting needs the trust-manager install
+                SslTrustStore.trustCertificate(hostname, sha256Fingerprint, validTo)
                 promise.resolve(null)
             } catch (e: Exception) {
                 promise.reject("ERR_TRUST_CERT", e.message, e)
@@ -84,7 +84,9 @@ class ExpoSslTrustModule : Module() {
         AsyncFunction("removeTrustedCertificate") { hostname: String, promise: Promise ->
             try {
                 val context = appContext.reactContext ?: throw Exception("React context not available")
-                SslTrustStore.init(context)
+                // loadCerts (not init): removeTrustedCertificate re-installs the
+                // trust manager itself with the updated store.
+                SslTrustStore.loadCerts(context)
                 SslTrustStore.removeTrustedCertificate(hostname)
                 promise.resolve(null)
             } catch (e: Exception) {
@@ -92,10 +94,25 @@ class ExpoSslTrustModule : Module() {
             }
         }
 
+        AsyncFunction("clearAllTrustedCertificates") { promise: Promise ->
+            try {
+                val context = appContext.reactContext ?: throw Exception("React context not available")
+                SslTrustStore.loadCerts(context)
+                SslTrustStore.clearAllTrustedCertificates()
+                promise.resolve(null)
+            } catch (e: Exception) {
+                promise.reject("ERR_CLEAR_CERTS", e.message, e)
+            }
+        }
+
+        // Read-only: `loadCerts` (no install). The OkHttp factory is installed at
+        // app startup by ExpoSslTrustPackage's ApplicationLifecycleListener (which
+        // is the only point early enough — before RN builds its fixed HTTP client),
+        // so reads don't need to install.
         AsyncFunction("getTrustedCertificates") { promise: Promise ->
             try {
                 val context = appContext.reactContext ?: throw Exception("React context not available")
-                SslTrustStore.init(context)
+                SslTrustStore.loadCerts(context)
                 val certs = SslTrustStore.getTrustedCertificates()
                 promise.resolve(certs)
             } catch (e: Exception) {
@@ -106,7 +123,9 @@ class ExpoSslTrustModule : Module() {
         AsyncFunction("isCertificateTrusted") { hostname: String, promise: Promise ->
             try {
                 val context = appContext.reactContext ?: throw Exception("React context not available")
-                SslTrustStore.init(context)
+                // loadCerts only: not called from JS in a path that needs install
+                // (the native hostname verifier reads the store directly).
+                SslTrustStore.loadCerts(context)
                 val trusted = SslTrustStore.isCertificateTrusted(hostname)
                 promise.resolve(trusted)
             } catch (e: Exception) {

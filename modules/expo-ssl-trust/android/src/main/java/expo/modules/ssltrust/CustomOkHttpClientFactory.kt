@@ -16,7 +16,25 @@ class CustomOkHttpClientFactory(
     private val trustManager: X509TrustManager
 ) {
     fun createNewNetworkModuleClient(): OkHttpClient {
-        return OkHttpClient.Builder()
+        // Base on RN's OWN builder — it carries the config NetworkingModule REQUIRES,
+        // notably a `ReactCookieJarContainer`. A bare `OkHttpClient.Builder()` leaves
+        // the default `CookieJar.NO_COOKIES`, which RN then casts to `CookieJarContainer`
+        // → hard crash ("NoCookies cannot be cast to CookieJarContainer"). We ADD only
+        // the pinned SSL socket factory + hostname verifier on top.
+        //
+        // Reflection (not a direct import): this module does not compile-depend on
+        // react-android — RN is provided by the host app at runtime — same pattern as
+        // SslTrustStore. `createClientBuilder()` does NOT consult the factory, so no
+        // recursion.
+        val builder = try {
+            val providerClass = Class.forName("com.facebook.react.modules.network.OkHttpClientProvider")
+            val createClientBuilder = providerClass.getMethod("createClientBuilder")
+            createClientBuilder.invoke(null) as OkHttpClient.Builder
+        } catch (e: Exception) {
+            android.util.Log.w("SslTrustStore", "createClientBuilder() reflection failed: ${e.message}")
+            OkHttpClient.Builder()
+        }
+        return builder
             .sslSocketFactory(sslSocketFactory, trustManager)
             .hostnameVerifier(CustomHostnameVerifier())
             .build()

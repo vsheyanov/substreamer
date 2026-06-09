@@ -2,6 +2,7 @@ export {
   getCertificateInfo,
   trustCertificate,
   removeTrustedCertificate,
+  clearAllTrustedCertificates,
   getTrustedCertificates,
   isCertificateTrusted,
   initTrustStore,

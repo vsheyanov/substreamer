@@ -10,6 +10,7 @@ import { clearImageCache } from '../../services/imageCacheService';
 import { clearMusicCache } from '../../services/musicCacheService';
 import { clearQueue } from '../../services/playerService';
 import { stopPolling } from '../../services/scanService';
+import { clearAllNativeTrust } from '../../services/sslTrustService';
 import { clearApiCache } from '../../services/subsonicService';
 import { authStore } from '../../store/authStore';
 import { deviceIdentityStore } from '../../store/deviceIdentityStore';
@@ -17,7 +18,6 @@ import { resetAllStores } from '../../store/resetAllStores';
 import { serverInfoStore } from '../../store/serverInfoStore';
 import { ChangePasswordSheet } from './ChangePasswordSheet';
 import { EditDeviceNameSheet } from './EditDeviceNameSheet';
-import { EditServerUrlSheet } from './EditServerUrlSheet';
 import { SettingsSectionTitle } from './SettingsSectionTitle';
 
 export function AccountCard() {
@@ -25,9 +25,6 @@ export function AccountCard() {
   const { colors } = useTheme();
   const router = useRouter();
 
-  const serverUrl = authStore((s) => s.serverUrl);
-  const primaryServerUrl = authStore((s) => s.primaryServerUrl);
-  const secondaryServerUrl = authStore((s) => s.secondaryServerUrl);
   const username = authStore((s) => s.username);
   const password = authStore((s) => s.password);
   const deviceLabel = deviceIdentityStore((s) => s.deviceLabel);
@@ -35,15 +32,18 @@ export function AccountCard() {
   const shareRole = serverInfoStore((s) => s.shareRole);
 
   const [passwordVisible, setPasswordVisible] = useState(false);
-  const [primaryUrlSheetVisible, setPrimaryUrlSheetVisible] = useState(false);
-  const [secondaryUrlSheetVisible, setSecondaryUrlSheetVisible] = useState(false);
   const [changePasswordVisible, setChangePasswordVisible] = useState(false);
   const [deviceNameSheetVisible, setDeviceNameSheetVisible] = useState(false);
 
-  const handleLogout = useCallback(() => {
+  const handleLogout = useCallback(async () => {
     clearQueue();
     stopPolling();
     clearApiCache();
+    // Clear the NATIVE trust store + stop the proxy BEFORE resetting JS state /
+    // navigating to login. The native store is what the URLProtocol swizzle /
+    // OkHttp actually enforce; awaiting here (rather than fire-and-forget) means
+    // a self-signed re-login re-prompts instead of racing a still-trusted cert.
+    await clearAllNativeTrust();
     resetAllStores();
     clearImageCache();
     clearMusicCache();
@@ -57,48 +57,6 @@ export function AccountCard() {
       <View style={settingsStyles.section}>
         <SettingsSectionTitle>{t('account')}</SettingsSectionTitle>
         <View style={[settingsStyles.card, settingsStyles.cardPadded, { backgroundColor: colors.card }]}>
-          <Pressable
-            onPress={() => setPrimaryUrlSheetVisible(true)}
-            style={({ pressed }) => [
-              styles.fieldRow,
-              { borderBottomColor: colors.border },
-              pressed && settingsStyles.pressed,
-            ]}
-          >
-            <Text style={[styles.fieldLabel, { color: colors.textPrimary }]}>{t('primaryServerUrl')}</Text>
-            <View style={styles.rightValue}>
-              <Text
-                style={[styles.fieldValue, { color: colors.textSecondary }]}
-                numberOfLines={1}
-                ellipsizeMode="middle"
-              >
-                {primaryServerUrl ?? serverUrl ?? '—'}
-              </Text>
-              <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
-            </View>
-          </Pressable>
-          <Pressable
-            onPress={() => setSecondaryUrlSheetVisible(true)}
-            style={({ pressed }) => [
-              styles.fieldRow,
-              { borderBottomColor: colors.border },
-              pressed && settingsStyles.pressed,
-            ]}
-          >
-            <Text style={[styles.fieldLabel, { color: colors.textPrimary }]}>
-              {t('secondaryServerUrl')}
-            </Text>
-            <View style={styles.rightValue}>
-              <Text
-                style={[styles.fieldValue, { color: colors.textSecondary }]}
-                numberOfLines={1}
-                ellipsizeMode="middle"
-              >
-                {secondaryServerUrl ?? t('notSet')}
-              </Text>
-              <Ionicons name="chevron-forward" size={16} color={colors.textSecondary} />
-            </View>
-          </Pressable>
           <View style={[styles.fieldRow, { borderBottomColor: colors.border }]}>
             <Text style={[styles.fieldLabel, { color: colors.textPrimary }]}>{t('username')}</Text>
             <Text style={[styles.fieldValue, { color: colors.textSecondary }]}>{username ?? '—'}</Text>
@@ -175,16 +133,6 @@ export function AccountCard() {
         </View>
       </View>
 
-      <EditServerUrlSheet
-        visible={primaryUrlSheetVisible}
-        onClose={() => setPrimaryUrlSheetVisible(false)}
-        target="primary"
-      />
-      <EditServerUrlSheet
-        visible={secondaryUrlSheetVisible}
-        onClose={() => setSecondaryUrlSheetVisible(false)}
-        target="secondary"
-      />
       <ChangePasswordSheet
         visible={changePasswordVisible}
         onClose={() => setChangePasswordVisible(false)}

@@ -112,12 +112,24 @@ describe('getCertificateInfo', () => {
 });
 
 describe('trustCertificate', () => {
-  it('passes hostname and fingerprint to native', async () => {
+  it('passes hostname, fingerprint, and null validTo to native', async () => {
     mockModule.trustCertificate.mockResolvedValue(undefined);
 
     await trustCertificate('navidrome.local', 'AA:BB:CC');
 
-    expect(mockModule.trustCertificate).toHaveBeenCalledWith('navidrome.local', 'AA:BB:CC');
+    expect(mockModule.trustCertificate).toHaveBeenCalledWith('navidrome.local', 'AA:BB:CC', null);
+  });
+
+  it('passes validTo through to native when provided', async () => {
+    mockModule.trustCertificate.mockResolvedValue(undefined);
+
+    await trustCertificate('navidrome.local', 'AA:BB:CC', '2027-01-01T00:00:00Z');
+
+    expect(mockModule.trustCertificate).toHaveBeenCalledWith(
+      'navidrome.local',
+      'AA:BB:CC',
+      '2027-01-01T00:00:00Z',
+    );
   });
 });
 

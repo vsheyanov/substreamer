@@ -18,7 +18,6 @@ import { clearScrobbles } from './persistence/scrobbleTable';
 import { clearMusicCacheTables } from './musicCacheStore';
 import { teardownMusicCache } from '../services/musicCacheService';
 import { clearImageCache, teardownImageCache } from '../services/imageCacheService';
-import { clearAllNativeTrust } from '../services/sslTrustService';
 
 // Persisted stores
 import { albumDetailStore } from './albumDetailStore';
@@ -130,12 +129,8 @@ const allStores = [
 ];
 
 export function resetAllStores(): void {
-  // Clear the NATIVE trust store + stop the proxy off-thread. The native
-  // SslTrustStore (read by the iOS URLProtocol swizzle / Android OkHttp) and
-  // the proxy upstreams aren't part of the JS store reset — without this the
-  // device keeps trusting the self-signed cert after logout. Reads the native
-  // store directly so it also clears certs the JS store no longer lists.
-  void clearAllNativeTrust();
+  // (Native SSL trust + proxy teardown happens in the logout handler, awaited
+  // before this runs — see AccountCard.handleLogout.)
 
   // Unregister cache-service AppState listeners before clearing state so a
   // background→foreground transition while logged out can't fire stalled-

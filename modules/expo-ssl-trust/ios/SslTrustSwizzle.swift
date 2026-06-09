@@ -34,11 +34,11 @@ extension URLSessionConfiguration {
                 #selector(getter: URLSessionConfiguration.sslTrust_default)
             )
         else {
-            NSLog("[SSLPROXY] swizzle: could not resolve URLSessionConfiguration.default")
+            SslTrustLogger.log("swizzle: could not resolve URLSessionConfiguration.default")
             return
         }
         method_exchangeImplementations(original, swizzled)
-        NSLog("[SSLPROXY] URLSessionConfiguration.default swizzled for SSL trust")
+        SslTrustLogger.log("URLSession swizzle installed")
     }
 
     // After the exchange, calling `self.sslTrust_default` invokes the ORIGINAL

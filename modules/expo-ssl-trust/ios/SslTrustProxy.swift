@@ -33,13 +33,22 @@ final class SslTrustProxy: NSObject {
     /// change, and JS refreshes that on foreground).
     private var upstreamsByToken: [String: String] = [:]
 
-    /// Upstream URLSession with the pinned-trust delegate. Ephemeral so nothing
-    /// is cached; one shared session handles concurrent upstream requests.
+    /// Pinned-trust delegate for the upstream HTTPS connection. Passed as the
+    /// PER-TASK delegate to `bytes(for:delegate:)` (see `forward`). The async
+    /// bytes/data APIs deliver the server-trust challenge to the TASK delegate's
+    /// `urlSession(_:task:didReceive:)`, NOT to a session-level delegate — so a
+    /// session-level trust handler is silently skipped, default validation runs,
+    /// and the self-signed cert is rejected with -1202. The session itself has
+    /// no delegate; trust is handled entirely per-task.
+    private let trustDelegate = ProxyTrustDelegate()
+
+    /// Upstream URLSession. Ephemeral so nothing is cached; one shared session
+    /// handles concurrent upstream requests. Trust is handled per-task.
     private lazy var session: URLSession = {
         let cfg = URLSessionConfiguration.ephemeral
         cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
         cfg.urlCache = nil
-        return URLSession(configuration: cfg, delegate: ProxyTrustDelegate(), delegateQueue: nil)
+        return URLSession(configuration: cfg)
     }()
 
     private let connQueue = DispatchQueue(label: "expo.ssltrust.proxy.conn", attributes: .concurrent)
@@ -57,7 +66,7 @@ final class SslTrustProxy: NSObject {
             }
             let token = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
             upstreamsByToken[token] = normalized
-            NSLog("[SSLPROXY] register %@ -> %@", normalized, token)
+            SslTrustLogger.log("registered upstream \(normalized)")
             return token
         }
     }
@@ -121,7 +130,7 @@ final class SslTrustProxy: NSObject {
         let result = info()
         if result == nil {
             let (p, n) = stateLock.withLock { (self.boundPort, self.upstreamsByToken.count) }
-            NSLog("[SSLPROXY] ensureRunningAndWait nil after %dms (boundPort=%d upstreams=%d)", timeoutMs, Int(p), n)
+            SslTrustLogger.log("ensureRunningAndWait nil after \(timeoutMs)ms (boundPort=\(p) upstreams=\(n))")
         }
         return result
     }
@@ -142,9 +151,16 @@ final class SslTrustProxy: NSObject {
     private func start() {
         do {
             let params = NWParameters.tcp
-            // Loopback only: bind to 127.0.0.1, accept local connections only.
-            params.requiredLocalEndpoint = .hostPort(host: "127.0.0.1", port: .any)
-            params.acceptLocalOnly = true
+            // Loopback only. Bind to the loopback interface (lo0 = 127.0.0.1/::1)
+            // and let the OS pick a free high port. NB: a listener-level
+            // `requiredLocalEndpoint` is the WRONG tool here — on iOS it makes the
+            // listener complete the TCP handshake but then RESET the connection
+            // before it reaches `.ready`, so no response is ever written (the
+            // "accept then reset, zero bytes" bug). `requiredInterfaceType =
+            // .loopback` binds loopback-only (LAN connections on en0 are rejected
+            // at the interface, satisfying the 127.0.0.1-only requirement) and
+            // lets accepted connections actually reach `.ready`.
+            params.requiredInterfaceType = .loopback
             params.allowLocalEndpointReuse = true
 
             let l = try NWListener(using: params)
@@ -154,17 +170,15 @@ final class SslTrustProxy: NSObject {
                 case .ready:
                     if let p = l.port?.rawValue {
                         self.stateLock.withLock { self.boundPort = p }
-                        NSLog("[SSLPROXY] listening on 127.0.0.1:%d", Int(p))
+                        SslTrustLogger.log("listening on 127.0.0.1:\(p)")
                     } else {
-                        NSLog("[SSLPROXY] .ready but no port")
+                        SslTrustLogger.log("listener ready but no port")
                     }
                 case .failed(let error):
-                    NSLog("[SSLPROXY] listener FAILED: %@", "\(error)")
+                    SslTrustLogger.log("listener failed: \(error)")
                     self.stateLock.withLock {
                         if self.listener === l { self.listener = nil; self.boundPort = 0 }
                     }
-                case .waiting(let error):
-                    NSLog("[SSLPROXY] listener waiting: %@", "\(error)")
                 case .cancelled:
                     self.stateLock.withLock {
                         if self.listener === l { self.listener = nil; self.boundPort = 0 }
@@ -179,29 +193,56 @@ final class SslTrustProxy: NSObject {
             stateLock.withLock { self.listener = l }
             l.start(queue: connQueue)
         } catch {
-            NSLog("[SslTrustProxy] failed to start listener: \(error)")
+            SslTrustLogger.log("failed to start listener: \(error)")
         }
     }
 
     // MARK: - Per-connection handling
 
     private func handle(connection conn: NWConnection) {
-        conn.start(queue: connQueue)
-        readRequest(conn, buffer: Data())
+        // Each connection gets its OWN serial queue: NWConnection delivers all of
+        // its callbacks there, and serial ordering avoids the send/receive races
+        // a shared concurrent queue introduced. We wait for `.ready` before doing
+        // any I/O — issuing `receive`/`send` on a not-yet-ready connection that
+        // then fails resets the socket with no response written.
+        let q = DispatchQueue(label: "expo.ssltrust.proxy.conn.handler")
+        // Holds this connection's in-flight upstream streaming task so a client
+        // disconnect can cancel it promptly (stop pulling bytes AVPlayer has
+        // abandoned) instead of waiting for the next write to fail.
+        let taskBox = TaskBox()
+        conn.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .ready:
+                self?.readRequest(conn, buffer: Data(), taskBox: taskBox)
+            case .failed(let error):
+                // AVPlayer routinely cancels range connections it no longer needs;
+                // that arrives here as a reset and is expected, not an error.
+                taskBox.cancel()
+                if !Self.isBenignDisconnect(error) {
+                    SslTrustLogger.log("connection failed: \(error)")
+                }
+                conn.cancel()
+            case .cancelled:
+                taskBox.cancel()
+            default:
+                break
+            }
+        }
+        conn.start(queue: q)
     }
 
     /// Accumulate bytes until the end of the request headers (\r\n\r\n), then
     /// read any Content-Length body and forward. Bounded so a malicious client
     /// can't grow the header buffer unbounded.
-    private func readRequest(_ conn: NWConnection, buffer: Data) {
+    private func readRequest(_ conn: NWConnection, buffer: Data, taskBox: TaskBox) {
         if buffer.count > 64 * 1024 {
             self.fail(conn, status: 431, reason: "Request Header Fields Too Large")
             return
         }
         conn.receive(minimumIncompleteLength: 1, maximumLength: 16 * 1024) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
-            if let error = error {
-                NSLog("[SslTrustProxy] receive error: \(error)")
+            if error != nil {
+                // A receive error means the client went away — expected churn.
                 conn.cancel()
                 return
             }
@@ -212,7 +253,7 @@ final class SslTrustProxy: NSObject {
                 if isComplete {
                     conn.cancel()
                 } else {
-                    self.readRequest(conn, buffer: buf)
+                    self.readRequest(conn, buffer: buf, taskBox: taskBox)
                 }
                 return
             }
@@ -226,45 +267,44 @@ final class SslTrustProxy: NSObject {
 
             let alreadyHaveBody = buf.subdata(in: bodyStart..<buf.count)
             if req.contentLength > alreadyHaveBody.count {
-                self.readBody(conn, req: req, body: alreadyHaveBody)
+                self.readBody(conn, req: req, body: alreadyHaveBody, taskBox: taskBox)
             } else {
-                self.forward(conn, req: req, body: alreadyHaveBody.prefix(req.contentLength))
+                self.forward(conn, req: req, body: alreadyHaveBody.prefix(req.contentLength), taskBox: taskBox)
             }
         }
     }
 
-    private func readBody(_ conn: NWConnection, req: ParsedRequest, body: Data) {
+    private func readBody(_ conn: NWConnection, req: ParsedRequest, body: Data, taskBox: TaskBox) {
         conn.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, isComplete, error in
             guard let self = self else { return }
-            if let error = error {
-                NSLog("[SslTrustProxy] body receive error: \(error)")
+            if error != nil {
                 conn.cancel()
                 return
             }
             var b = body
             if let data = data { b.append(data) }
             if b.count >= req.contentLength {
-                self.forward(conn, req: req, body: b.prefix(req.contentLength))
+                self.forward(conn, req: req, body: b.prefix(req.contentLength), taskBox: taskBox)
             } else if isComplete {
                 // Client closed early; forward what we have.
-                self.forward(conn, req: req, body: b)
+                self.forward(conn, req: req, body: b, taskBox: taskBox)
             } else {
-                self.readBody(conn, req: req, body: b)
+                self.readBody(conn, req: req, body: b, taskBox: taskBox)
             }
         }
     }
 
     // MARK: - Forwarding
 
-    private func forward(_ conn: NWConnection, req: ParsedRequest, body: Data) {
+    private func forward(_ conn: NWConnection, req: ParsedRequest, body: Data, taskBox: TaskBox) {
         // Resolve token → upstream base URL. Unknown token = access denied.
         guard let baseUrl = stateLock.withLock({ upstreamsByToken[req.token] }),
               let upstream = URL(string: baseUrl + req.upstreamPath) else {
-            NSLog("[SSLPROXY] 403 method=%@ token=%@ path=%@", req.method, req.token, req.upstreamPath)
+            SslTrustLogger.log("denied request with unknown token: \(req.pathOnly)")
             self.fail(conn, status: 403, reason: "Forbidden")
             return
         }
-        NSLog("[SSLPROXY] forward %@ -> %@", req.method, upstream.absoluteString)
+        SslTrustLogger.log("forward \(req.method) \(req.pathOnly)")
 
         var request = URLRequest(url: upstream)
         request.httpMethod = req.method
@@ -278,16 +318,16 @@ final class SslTrustProxy: NSObject {
             request.httpBody = body
         }
 
-        Task { [weak self] in
+        let task = Task { [weak self] in
             guard let self = self else { return }
             do {
-                let (bytes, response) = try await self.session.bytes(for: request)
+                let (bytes, response) = try await self.session.bytes(for: request, delegate: self.trustDelegate)
                 guard let http = response as? HTTPURLResponse else {
-                    NSLog("[SSLPROXY] upstream non-HTTP response")
+                    SslTrustLogger.log("upstream non-HTTP response \(req.pathOnly)")
                     self.fail(conn, status: 502, reason: "Bad Gateway")
                     return
                 }
-                NSLog("[SSLPROXY] upstream %d for %@", http.statusCode, upstream.absoluteString)
+                SslTrustLogger.log("upstream \(http.statusCode) \(req.pathOnly)")
                 // Write status line + relayed response headers.
                 let head = Self.responseHead(from: http)
                 try await self.send(conn, Data(head.utf8))
@@ -295,6 +335,7 @@ final class SslTrustProxy: NSObject {
                 var chunk = Data()
                 chunk.reserveCapacity(64 * 1024)
                 for try await byte in bytes {
+                    if Task.isCancelled { conn.cancel(); return }
                     chunk.append(byte)
                     if chunk.count >= 64 * 1024 {
                         try await self.send(conn, chunk)
@@ -306,13 +347,23 @@ final class SslTrustProxy: NSObject {
                 }
                 conn.cancel()
             } catch {
-                // Distinguish timeout from other upstream failures for the
-                // app's reachability monitoring.
+                // A client disconnect (AVPlayer cancelling a range request) or our
+                // own cancellation surfaces here as a write/stream failure — that's
+                // normal churn, not an upstream fault, so relay nothing.
+                if Task.isCancelled || Self.isClientGone(error) {
+                    conn.cancel()
+                    return
+                }
+                // Distinguish timeout from other upstream failures for the app's
+                // reachability monitoring. Log code+domain only — the NSError
+                // description embeds the full URL incl. auth params.
                 let status = (error as? URLError)?.code == .timedOut ? 504 : 502
-                NSLog("[SSLPROXY] upstream ERROR (%d): %@", status, "\(error)")
+                let ns = error as NSError
+                SslTrustLogger.log("upstream error (\(status)) \(req.pathOnly): \(ns.domain) \(ns.code)")
                 self.fail(conn, status: status, reason: "Upstream Error")
             }
         }
+        taskBox.set(task)
     }
 
     // MARK: - Writing
@@ -365,6 +416,27 @@ final class SslTrustProxy: NSObject {
         return base
     }
 
+    /// True for the connection-failure codes that mean the CLIENT hung up
+    /// (AVPlayer cancelling a range request) rather than a real fault — so we
+    /// stay quiet instead of logging it as an error.
+    private static func isBenignDisconnect(_ error: NWError) -> Bool {
+        if case .posix(let code) = error {
+            return code == .ECONNRESET || code == .ENOTCONN || code == .EPIPE || code == .ECANCELED
+        }
+        return false
+    }
+
+    /// True when an upstream stream/write error is actually the local client
+    /// connection going away mid-stream (relay nothing, just clean up).
+    private static func isClientGone(_ error: Error) -> Bool {
+        if let nw = error as? NWError {
+            return isBenignDisconnect(nw)
+        }
+        let ns = error as NSError
+        return ns.domain == NSPOSIXErrorDomain &&
+            (ns.code == Int(ECONNRESET) || ns.code == Int(ENOTCONN) || ns.code == Int(EPIPE))
+    }
+
     private static let headerTerminator = Data("\r\n\r\n".utf8)
 
     private static func range(of needle: Data, in haystack: Data) -> Range<Int>? {
@@ -381,6 +453,18 @@ final class SslTrustProxy: NSObject {
     }
 }
 
+// MARK: - Per-connection task holder
+
+/// Thread-safe holder for a connection's in-flight upstream streaming task, so a
+/// client disconnect (handled on the connection queue) can cancel the streaming
+/// task (running on a separate Task executor) promptly.
+private final class TaskBox {
+    private let lock = NSLock()
+    private var task: Task<Void, Never>?
+    func set(_ t: Task<Void, Never>) { lock.lock(); task = t; lock.unlock() }
+    func cancel() { lock.lock(); task?.cancel(); task = nil; lock.unlock() }
+}
+
 // MARK: - Request parsing
 
 /// A minimal parse of the incoming request: just what a transparent relay
@@ -391,6 +475,16 @@ private struct ParsedRequest {
     let upstreamPath: String
     let contentLength: Int
     let forwardableHeaders: [(String, String)]
+
+    /// The path with any query string stripped — safe to log. The query carries
+    /// the Subsonic auth params (`t`/`s`) that must never reach the shareable
+    /// diagnostic log.
+    var pathOnly: String {
+        if let q = upstreamPath.firstIndex(of: "?") {
+            return String(upstreamPath[upstreamPath.startIndex..<q])
+        }
+        return upstreamPath
+    }
 
     init?(headerData: Data) {
         guard let text = String(data: headerData, encoding: .utf8) else { return nil }
@@ -441,9 +535,14 @@ private struct ParsedRequest {
 /// for the proxy's single upstream HTTPS connection. Identical logic to the
 /// (now-removed) SslTrustURLProtocol challenge handler — only the delivery
 /// mechanism changed.
-private final class ProxyTrustDelegate: NSObject, URLSessionDataDelegate {
+private final class ProxyTrustDelegate: NSObject, URLSessionTaskDelegate {
+    // TASK-level challenge: this is the one the async `bytes(for:delegate:)` API
+    // invokes for its per-task delegate. (A session-level `urlSession(_:didReceive:)`
+    // is NOT consulted by that API — which is why the self-signed cert was being
+    // rejected with -1202 before.)
     func urlSession(
         _ session: URLSession,
+        task: URLSessionTask,
         didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
